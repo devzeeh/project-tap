@@ -1,0 +1,21 @@
+#ignoring the enviroment
+.env
+.unknown
+
+# gitgore the compiled file and 
+*.exe
+*.txt
+
+*testing tap/*
+
+# gitgore the storage directory
+storage/*
+!storage/.gitkeep
+storage/**/*
+!storage/**/.gitkeep
+
+tested/*
+tested/**/*
+
+testdata/*
+testdata/**/*
