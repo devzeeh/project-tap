@@ -26,7 +26,7 @@ func (r *Repository) FindUserByUsername(ctx context.Context, username string) (U
 
 	var u User
 	err := r.store.QueryRowContext(ctx, query, username, username, username).
-		Scan(&u.UserID, &u.Email, &u.PasswordHash, &u.Role)
+		Scan(&u.UserID, &u.Username, &u.PasswordHash, &u.Role)
 	if err != nil {
 		log.Printf("error finding user %s: %v", username, err)
 		return User{}, fmt.Errorf("username %s not found: %w", username, err)

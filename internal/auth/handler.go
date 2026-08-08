@@ -47,6 +47,13 @@ func (h *Handler) LoginAuthHandler(w http.ResponseWriter, r *http.Request) {
 		ID:          result.ID,
 		Username:    result.Username,
 		RedirectURL: result.RedirectURL,
+		Tokens: struct {
+			Access  string `json:"access"`
+			Refresh string `json:"refresh"`
+		}{
+			Access:  result.Tokens.Access,
+			Refresh: result.Tokens.Refresh,
+		},
 	})
 }
 
