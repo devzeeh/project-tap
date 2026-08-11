@@ -1,0 +1,57 @@
+name: Enforce PR Branch Flow
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  enforce-flow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR targeting main
+        if: github.base_ref == 'main'
+        run: |
+          HEAD_REF="${{ github.head_ref }}"
+          
+          # Allow 'development' or branches containing '-rc', starting with 'rc-', or 'release/'
+          if [[ "$HEAD_REF" == "development" ]] || [[ "$HEAD_REF" == *-rc* ]] || [[ "$HEAD_REF" == rc-* ]] || [[ "$HEAD_REF" == release/* ]]; then
+            echo "Valid source branch ($HEAD_REF) targeting main."
+          else
+            echo "ERROR: Invalid source branch for main."
+            echo "Pull requests targeting 'main' must originate from 'development' or a release candidate branch (e.g., *-rc)."
+            echo "Your source branch: $HEAD_REF"
+            exit 1
+          fi
+
+      - name: Check PR targeting development
+        if: github.base_ref == 'development'
+        run: |
+          HEAD_REF="${{ github.head_ref }}"
+          
+          # Block PRs from main back to development (typically handled by fast-forward or standard git flow differently)
+          if [[ "$HEAD_REF" == "main" ]]; then
+            echo "ERROR: Pull requests from 'main' to 'development' are restricted."
+            exit 1
+          fi
+          echo "Valid source branch ($HEAD_REF) targeting development."
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Download Dependencies
+        run: go mod download
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run Go Tests
+        # go test ./... will gracefully pass (exit 0) even if no _test.go files exist
+        run: go test ./... -v -race -cover
