@@ -21,7 +21,7 @@ func ValidateLoginRequest(req LoginRequest) (string, bool) {
 
 // ValidateSignupRequest returns a user-friendly error for the first failing
 // field, or ("", true) when validation passes.
-/*func ValidateSignupRequest(req SignupRequest) (string, bool) {
+func ValidateSignupRequest(req SignupRequest) (string, bool) {
 	return validateStruct(req, map[string]string{
 		"FirstName":     "First name is required.",
 		"LastName":      "Last name is required.",
@@ -30,11 +30,11 @@ func ValidateLoginRequest(req LoginRequest) (string, bool) {
 		"CardNumber":    "Card number must be exactly 16 digits.",
 		"Password":      "Password must be at least 8 characters long.",
 	})
-} */
+}
 
 // ValidateMerchantSignupRequest returns a user-friendly error for the first
 // failing field, or ("", true) when validation passes.
-/*func ValidateMerchantSignupRequest(req MerchantSignupRequest) (string, bool) {
+func ValidateMerchantSignupRequest(req MerchantSignupRequest) (string, bool) {
 	return validateStruct(req, map[string]string{
 		"BusinessName":    "Business name is required.",
 		"BusinessType":    "Business type is required.",
@@ -44,7 +44,7 @@ func ValidateLoginRequest(req LoginRequest) (string, bool) {
 		"BusinessEmail":   "Please provide a valid business email address.",
 		"Password":        "Password must be at least 6 characters long.",
 	})
-} */
+}
 
 // ValidatePassword enforces complexity rules: 8+ chars, upper, lower, digit,
 // special character.
@@ -81,11 +81,11 @@ func ValidatePassword(password string) error {
 }
 
 // ValidateForgotPasswordRequest returns a user-friendly error for an invalid email, or ("", true) on success.
-/* func ValidateForgotPasswordRequest(req ForgotPasswordRequest) (string, bool) {
+func ValidateForgotPasswordRequest(req ForgotPasswordRequest) (string, bool) {
 	return validateStruct(req, map[string]string{
 		"Email": "Please enter a valid email address.",
 	})
-} */
+}
 
 // internal helper
 

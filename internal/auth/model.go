@@ -1,53 +1,26 @@
 package auth
 
-import "github.com/shopspring/decimal"
+import "time"
 
-// model.go contain the model struct that represent the data entity in the system
-// and also contain the request and response struct
-
-// UserRole represents a role in the system
-type UserRole string
-
-// Role of the user in the system
-// Role Based Access Control (RBAC)
-const (
-	RoleUser     UserRole = "user"
-	RoleMerchant UserRole = "merchant"
-	RoleAdmin    UserRole = "admin"
-)
-
-// User represents a user in the system
+// User is the full users table row used across auth flows.
 type User struct {
-	UserID          string          `json:"user_id"`
-	Username        string          `json:"username"`
-	FullName        string          `json:"full_name"`
-	Email           string          `json:"email"`
-	PasswordHash    string          `json:"-"` // ignore password in response
-	ConfirmPassword string          `json:"confirm_password,omitempty"`
-	CardNumber      string          `json:"card_number"`
-	Phone           string          `json:"phone"`
-	Balance         decimal.Decimal `json:"balance"`
-	Status          string          `json:"status"`
-	Role            string          `json:"role"`
-	CreatedAt       string          `json:"created_at"`
-	UpdatedAt       string          `json:"updated_at"`
-	IsActive        bool            `json:"is_active"` // True or False
+	UserID       string  `db:"user_id"`
+	Username     string  `db:"username"`
+	Name         string  `db:"name"`
+	Email        string  `db:"email"`
+	Phone        string  `db:"phone_number"`
+	CardNumber   string  `db:"card_number"`
+	PasswordHash string  `db:"password_hash"`
+	Role         string  `db:"role"`
+	Balance      float64 `db:"balance"`
+	Status       string  `db:"status"`
+	RegionID     string  `db:"region_id"`
+	CreatedAt    string  `db:"created_at"`
 }
 
-// LoginRequest represents a login request
-type LoginRequest struct {
-	Username string `json:"username" validate:"required"`
-	Password string `json:"password" validate:"required"`
-}
-
-// LoginResponse represents a login response
-type LoginResponse struct {
-	ID          string
-	Username    string
-	Role        string
-	RedirectURL string
-	Tokens      struct {
-		Access  string
-		Refresh string
-	}
+// OTPData holds a one-time password and its expiry for in-memory OTP tracking.
+// TODO: move to Redis for multi-instance deployments.
+type OTPData struct {
+	OTP    string
+	Expiry time.Time
 }

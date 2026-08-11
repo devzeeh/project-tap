@@ -1,103 +1,89 @@
 package auth
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"log"
+
 	"project-tap/internal/pkg/database"
 )
 
+// Repository handles every database operation needed by the auth package.
 type Repository struct {
 	store database.Store
 }
 
+// NewRepository creates a new instance of Repository connected to the given store.
 func NewRepository(store database.Store) *Repository {
 	return &Repository{store: store}
 }
 
-// Finds a user by username or email or phone number
-// Used by the handler to find a user by username or email or phone number
-// It does not use user id because the user id is not known at this point
-func (r *Repository) FindUserByUsername(ctx context.Context, username string) (User, error) {
-	const query = `SELECT id, username, password_hash, role
-		FROM users
-		WHERE email = ? OR username = ? OR phone_number = ?`
-
+// FindUserByIdentifier looks up a user by email, username, or phone number.
+func (r *Repository) FindUserByIdentifier(identifier string) (User, error) {
+	const stmt = `SELECT id, username, password_hash, role
+	              FROM users
+	              WHERE email = ? OR username = ? OR phone_number = ?`
 	var u User
-	err := r.store.QueryRowContext(ctx, query, username, username, username).
+	err := r.store.QueryRow(stmt, identifier, identifier, identifier).
 		Scan(&u.UserID, &u.Username, &u.PasswordHash, &u.Role)
 	if err != nil {
-		log.Printf("error finding user %s: %v", username, err)
-		return User{}, fmt.Errorf("username %s not found: %w", username, err)
+		return User{}, fmt.Errorf("find user by identifier: %w", err)
 	}
-
 	return u, nil
 }
 
-// Checks if a user with the given user ID exists
-// Used by the handler to check if the user ID exists
-func (r *Repository) IsUserIDExist(ctx context.Context, userID int64) (bool, error) {
-	var existing int64
-	const query = `SELECT user_id FROM users WHERE user_id = ?`
-	err := r.store.QueryRowContext(ctx, query, userID).Scan(&existing)
+// IsUserIDExist returns true if the given numeric user ID is already taken.
+func (r *Repository) IsUserIDExist(userID int64) (bool, error) {
+	var tmp int64
+	err := r.store.QueryRow("SELECT user_id FROM users WHERE user_id = ?", userID).Scan(&tmp)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	if err != nil {
-		log.Printf("error checking if user %d exists: %v", userID, err)
-		return false, fmt.Errorf("error checking if user %d exists: %w", userID, err)
+		return false, err
 	}
 	return true, nil
 }
 
-// Checks if a user with the given phone number exists
-// Used by the handler to check if the phone number exists
-func (r *Repository) IsPhoneExist(ctx context.Context, phoneNumber string) (bool, error) {
+// IsPhoneExist returns true if the phone number is already registered.
+func (r *Repository) IsPhoneExist(phone string) (bool, error) {
 	var existing string
-	const query = `SELECT phone_number FROM users WHERE phone_number = ?`
-	err := r.store.QueryRowContext(ctx, query, phoneNumber).Scan(&existing)
+	err := r.store.QueryRow("SELECT phone_number FROM users WHERE phone_number = ?", phone).Scan(&existing)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	if err != nil {
-		log.Printf("error checking if phone %s exists: %v", phoneNumber, err)
-		return false, fmt.Errorf("error checking if phone %s exists: %w", phoneNumber, err)
+		log.Printf("phone check error: %v", err)
+		return false, err
 	}
 	return true, nil
 }
 
-// Gets the initial balance of a user
-// Used by the handler to get the initial balance of a user
-func (r *Repository) GetInitialBalance(ctx context.Context, cardNumber string) (float64, error) {
+// GetInitialBalance returns the current balance on a card (used during signup
+// to carry over any pre-loaded balance).
+func (r *Repository) GetInitialBalance(cardNumber string) (float64, error) {
 	var balance float64
-	const query = `SELECT balance FROM cards WHERE card_number = ?`
-	err := r.store.QueryRowContext(ctx, query, cardNumber).Scan(&balance)
+	err := r.store.QueryRow("SELECT balance FROM cards WHERE card_number = ?", cardNumber).Scan(&balance)
 	if err != nil {
 		log.Printf("GetInitialBalance error for card %s: %v", cardNumber, err)
-		return 0, fmt.Errorf("error getting initial balance for card %s: %w", cardNumber, err)
+		return 0, err
 	}
 	return balance, nil
 }
 
-// Gets the status of a card
-// Used by the handler to get the status of a card
-func (r *Repository) GetCardStatus(ctx context.Context, cardNumber string) (string, error) {
+// GetCardStatus returns the status field for a card number.
+func (r *Repository) GetCardStatus(cardNumber string) (string, error) {
 	var status string
-	const query = `SELECT status FROM cards WHERE card_number = ?`
-	err := r.store.QueryRowContext(ctx, query, cardNumber).Scan(&status)
+	err := r.store.QueryRow("SELECT status FROM cards WHERE card_number = ?", cardNumber).Scan(&status)
 	if err != nil {
-		log.Printf("GetCardStatus error for card %s: %v", cardNumber, err)
-		return "", fmt.Errorf("error getting card status for card %s: %w", cardNumber, err)
+		return "", fmt.Errorf("get card status: %w", err)
 	}
 	return status, nil
 }
 
-// Updates the password of a user
-// Used by the handler to update the password of a user
-func (r *Repository) UpdatePassword(ctx context.Context, email, hashedPassword string) error {
-	const query = `UPDATE users SET password_hash = ? WHERE email = ?`
-	_, err := r.store.ExecContext(ctx, query, hashedPassword, email)
+// UpdatePassword sets a new bcrypt hash for the user with the given email.
+func (r *Repository) UpdatePassword(email, hashedPassword string) error {
+	_, err := r.store.Exec("UPDATE users SET password_hash = ? WHERE email = ?", hashedPassword, email)
 	if err != nil {
 		log.Printf("failed to update password: %v", err)
 		return err
@@ -105,26 +91,16 @@ func (r *Repository) UpdatePassword(ctx context.Context, email, hashedPassword s
 	return nil
 }
 
-// Finds a user by email
-// Used by the handler to find a user by email
-func (r *Repository) FindUserByEmail(ctx context.Context, email string) (string, string, error) {
-	var name, userID string
-	const query = `SELECT name, user_id FROM users WHERE email = ?`
-	err := r.store.QueryRowContext(ctx, query, email).Scan(&name, &userID)
-	if err != nil {
-		log.Printf("error finding user %s: %v", email, err)
-		return "", "", fmt.Errorf("username %s not found: %w", email, err)
-	}
-	return name, userID, nil
+// FindUserByEmail returns the name and user_id for a given email address.
+func (r *Repository) FindUserByEmail(email string) (name, userID string, err error) {
+	err = r.store.QueryRow("SELECT name, user_id FROM users WHERE email = ?", email).Scan(&name, &userID)
+	return
 }
 
 // FindNameByEmail returns only the display name for OTP emails.
-func (r *Repository) FindNameByEmail(ctx context.Context, email string) string {
+func (r *Repository) FindNameByEmail(email string) string {
 	var name string
-	const query = `SELECT name FROM users WHERE email = ?`
-	err := r.store.QueryRowContext(ctx, query, email).Scan(&name)
-	if err != nil {
-		log.Printf("error finding user %s: %v", email, err)
+	if err := r.store.QueryRow("SELECT name FROM users WHERE email = ?", email).Scan(&name); err != nil {
 		return "there" // safe fallback for email greeting
 	}
 	return name
@@ -132,11 +108,12 @@ func (r *Repository) FindNameByEmail(ctx context.Context, email string) string {
 
 // InsertActivityLog writes a row to user_activity_logs (best-effort; errors
 // are logged but do not fail the parent request).
-func (r *Repository) InsertActivityLog(ctx context.Context, userID, activityType, channel, status, description string) {
-	const query = `
+func (r *Repository) InsertActivityLog(userID, activityType, channel, status, description string) {
+	_, err := r.store.Exec(`
 		INSERT INTO user_activity_logs (user_id, activity_type, channel, status, description)
-		VALUES (?, ?, ?, ?, ?)`
-	_, err := r.store.ExecContext(ctx, query, userID, activityType, channel, status, description)
+		VALUES (?, ?, ?, ?, ?)`,
+		userID, activityType, channel, status, description,
+	)
 	if err != nil {
 		log.Printf("activity log insert failed [%s/%s]: %v", userID, activityType, err)
 	}
