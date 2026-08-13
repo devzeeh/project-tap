@@ -222,6 +222,10 @@ func (h *Handler) DashboardView(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Dashboard view is running...")
 
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
 	user, err := h.GetDashboardUser(username)
 	if err != nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -245,6 +249,14 @@ func (h *Handler) DashboardHandler(w http.ResponseWriter, r *http.Request) {
 		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
 			Success: false,
 			Message: "user is required",
+		})
+		return
+	}
+
+	if !h.IsAuthorizedUser(r, userID) {
+		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
+			Success: false,
+			Message: "Forbidden: Insufficient permissions",
 		})
 		return
 	}

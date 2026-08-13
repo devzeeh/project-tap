@@ -6,6 +6,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
+
 	"project-tap/internal/admin"
 	"project-tap/internal/auth"
 	"project-tap/internal/merchant"
@@ -18,7 +21,7 @@ import (
 )
 
 var (
-	tpl *template.Template
+	tpl = template.New("app")
 )
 
 func main() {
@@ -27,13 +30,20 @@ func main() {
 	if err != nil {
 		// Fallback: try loading from current directory
 		if err := godotenv.Load(); err != nil {
-			log.Fatalf("Error loading .env file: %v", err)
+			log.Printf("Notice: .env file not loaded (%v), using system environment variables", err)
 		}
 	}
 
 	// read .env VALUES
 	port := os.Getenv("PORT")
-	serverAddress := os.Getenv("SERVER_PORT")
+	if port == "" {
+		port = "3001"
+	}
+	serverAddress := os.Getenv("SERVER_ADDR")
+	if serverAddress == "" {
+		serverAddress = "0.0.0.0"
+	}
+	listenAddr := fmt.Sprintf("%s:%s", serverAddress, port)
 
 	// Setup Database using the new database package
 	db, err := database.Connect()
@@ -57,7 +67,7 @@ func main() {
 
 	adminRepo := admin.NewRepository(store)
 	adminSvc := admin.NewService(adminRepo)
-	adminHanlder := admin.NewHandler(adminSvc, tpl)
+	adminHandler := admin.NewHandler(adminSvc, tpl)
 
 	merchantRepo := merchant.NewRepository(store)
 	payoutGateway := merchant.NewXenditPayoutGateway(os.Getenv("XENDIT_SECRET_KEY"))
@@ -77,7 +87,7 @@ func main() {
 	auth.RegisterRoutes(mux, authHandler)
 
 	// Routes admin endpoints
-	admin.RegisterRoutes(mux, adminHanlder, requireAdmin)
+	admin.RegisterRoutes(mux, adminHandler, requireAdmin)
 	merchant.RegisterRoutes(mux, merchantHandler, requireMerchant)
 
 	// Customer Routes
@@ -104,23 +114,44 @@ func main() {
 	mux.Handle("GET /v1/user/{username}", requireCustomer(http.HandlerFunc(userHandler.DashboardHandler)))
 	mux.Handle("GET /v1/user/{username}/transactions", requireCustomer(http.HandlerFunc(userHandler.TransactionsJSONHandler)))
 
-	// Serve the basic frontend
-	mux.Handle("/", http.FileServer(http.Dir("./frontend")))
+	// Serve the basic frontend if directory exists
+	if _, err := os.Stat("./frontend"); err == nil {
+		mux.Handle("/", http.FileServer(http.Dir("./frontend")))
+	}
+
+	// Wrap server handler with CORS middleware
+	handler := corsMiddleware(mux)
+
+	// Configure HTTP Server with timeouts
+	srv := &http.Server{
+		Addr:         listenAddr,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 
 	// Start Server
-	fmt.Println("Server started on: http://" + serverAddress + ":" + port)
-	if err := http.ListenAndServe(serverAddress+":"+port, mux); err != nil {
-		log.Fatal(err)
+	fmt.Println("Server started on: http://" + listenAddr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Server failed: %v", err)
 	}
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
-	allowedOrigins := map[string]bool{
-		os.Getenv("CORS_ALLOWED_ORIGINS"): true, // Load from .env
-		//"http://localhost:5173":           true, // Vue dev
-		//"http://localhost:3001":           true, // Go dev
-		//"https://unicard.app":   		   true, // production
+	allowedOrigins := make(map[string]bool)
+	if originsEnv := os.Getenv("CORS_ALLOWED_ORIGINS"); originsEnv != "" {
+		for _, origin := range strings.Split(originsEnv, ",") {
+			if trimmed := strings.TrimSpace(origin); trimmed != "" {
+				allowedOrigins[trimmed] = true
+			}
+		}
 	}
+	if len(allowedOrigins) == 0 {
+		allowedOrigins["http://localhost:5173"] = true
+		allowedOrigins["http://localhost:3001"] = true
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if allowedOrigins[origin] {

@@ -44,6 +44,10 @@ func (h *Handler) TopUpView(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("TopUp view is running...")
 
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
 	user, err := h.GetDashboardUser(username)
 	if err != nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -63,6 +67,13 @@ func (h *Handler) TopUpView(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateXenditInvoice(w http.ResponseWriter, r *http.Request) {
 	// get username from url parameter
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
+			Success: false,
+			Message: "Forbidden: Insufficient permissions",
+		})
+		return
+	}
 
 	// get request body
 	var req TopUpRequest

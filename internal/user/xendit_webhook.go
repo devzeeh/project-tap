@@ -1,6 +1,7 @@
 package user
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -42,13 +43,12 @@ type XenditWebhookPayload struct {
 // It validates the callback token, processes the payment payload, and updates the user's balance.
 // more info here: https://developers.xendit.co/docs/invoices#handling-invoice-completion-via-webhooks
 func (h *Handler) XenditWebhook(w http.ResponseWriter, r *http.Request) {
-	// Verify Xendit Callback Token
+	// Verify Xendit Callback Token (fail-closed, constant-time compare)
 	xenditToken := os.Getenv("XENDIT_WEBHOOK_KEY")
 	callbackToken := r.Header.Get("x-callback-token")
 
-	// If no token is configured, skip validation for development, but it's recommended to have it
-	if xenditToken != "" && callbackToken != xenditToken {
-		log.Println("Invalid x-callback-token")
+	if xenditToken == "" || subtle.ConstantTimeCompare([]byte(callbackToken), []byte(xenditToken)) != 1 {
+		log.Println("Invalid x-callback-token or missing XENDIT_WEBHOOK_KEY")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -81,8 +81,8 @@ func (h *Handler) XenditWebhook(w http.ResponseWriter, r *http.Request) {
 			var convenienceFee float64
 			var currentStatus string
 
-			// Fetch the top-up record
-			err := tx.QueryRow(`SELECT card_number, amount, convenience_fee, status FROM top_ups WHERE topup_id = ?`, externalID).Scan(&cardNumber, &topUp.Amount, &convenienceFee, &currentStatus)
+			// Fetch the top-up record with pessimistic row lock
+			err := tx.QueryRow(`SELECT card_number, amount, convenience_fee, status FROM top_ups WHERE topup_id = ? FOR UPDATE`, externalID).Scan(&cardNumber, &topUp.Amount, &convenienceFee, &currentStatus)
 			if err != nil {
 				log.Println("Failed to find top-up record or invalid external_id:", err)
 				return nil // Ignore if not found, don't rollback, just return success to not re-trigger webhook

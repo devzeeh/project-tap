@@ -10,6 +10,10 @@ func (h *Handler) SettingsView(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Settings view is running...")
 
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
 	user, err := h.GetDashboardUser(username)
 	if err != nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)

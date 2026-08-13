@@ -127,3 +127,9 @@ func RequireAuth(allowedRoles ...string) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// GetUserClaims retrieves the authenticated user claims from the request context.
+func GetUserClaims(r *http.Request) (*authentication.JWTClaims, bool) {
+	claims, ok := r.Context().Value(UserClaimsKey).(*authentication.JWTClaims)
+	return claims, ok
+}

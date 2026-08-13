@@ -12,6 +12,10 @@ func (h *Handler) CardView(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Card view is running...")
 
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
 	user, err := h.GetDashboardUser(username)
 	if err != nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -35,6 +39,10 @@ type UpdateCardStatusRequest struct {
 }
 func (h *Handler) UpdateCardStatus(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		http.Error(w, "Forbidden: Insufficient permissions", http.StatusForbidden)
+		return
+	}
 
 	var req UpdateCardStatusRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -66,6 +74,13 @@ func (h *Handler) UpdateCardStatus(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) RequestReplacement(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
+			Success: false,
+			Message: "Forbidden: Insufficient permissions",
+		})
+		return
+	}
 
 	var userID string
 	err := h.Store.QueryRow("SELECT user_id FROM users WHERE username = ?", username).Scan(&userID)

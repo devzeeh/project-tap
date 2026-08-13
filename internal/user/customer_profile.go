@@ -59,8 +59,11 @@ func (h *Handler) verifyCurrentPassword(ctx context.Context, username, password 
 func (h *Handler) ProfileView(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Profile view is running...")
 
-	// Extract the username from the URL path
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
 	user, err := h.GetDashboardUser(username)
 	if err != nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -80,6 +83,13 @@ func (h *Handler) ProfileView(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) ProfileEdit(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
+			Success: false,
+			Message: "Forbidden: Insufficient permissions",
+		})
+		return
+	}
 	ctx := r.Context()
 
 	var req ProfileUpdateRequest
@@ -213,6 +223,13 @@ type VerifyPasswordRequest struct {
 }
 func (h *Handler) ProfileVerifyPassword(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
+			Success: false,
+			Message: "Forbidden: Insufficient permissions",
+		})
+		return
+	}
 	ctx := r.Context()
 
 	var req VerifyPasswordRequest
@@ -257,6 +274,13 @@ func (h *Handler) ProfileVerifyPassword(w http.ResponseWriter, r *http.Request) 
 }
 func (h *Handler) ProfileChangePassword(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
+	if !h.IsAuthorizedUser(r, username) {
+		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
+			Success: false,
+			Message: "Forbidden: Insufficient permissions",
+		})
+		return
+	}
 
 	var req ProfileUpdateRequest
 	var ctx = r.Context()
