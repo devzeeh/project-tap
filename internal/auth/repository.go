@@ -20,7 +20,7 @@ func NewRepository(store database.Store) *Repository {
 
 // FindUserByIdentifier looks up a user by email, username, or phone number.
 func (r *Repository) FindUserByIdentifier(identifier string) (User, error) {
-	const stmt = `SELECT id, username, password_hash, role
+	const stmt = `SELECT COALESCE(NULLIF(user_id, ''), CAST(id AS CHAR)), username, password_hash, role
 	              FROM users
 	              WHERE email = ? OR username = ? OR phone_number = ?`
 	var u User

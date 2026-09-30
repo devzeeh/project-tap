@@ -445,6 +445,7 @@ func verifyOTP(email, otp string) error {
 		delete(otpStore, email)
 		return errors.New("OTP expired")
 	}
+	delete(otpStore, email)
 	return nil
 }
 

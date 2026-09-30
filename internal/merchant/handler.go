@@ -1,6 +1,7 @@
 package merchant
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -8,19 +9,23 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
+
+	"project-tap/internal/pkg/cache"
 	jsonwrite "project-tap/internal/pkg/handler"
 	structs "project-tap/internal/pkg/structs"
 )
 
 // Handler holds the HTTP handlers and dependencies for the merchant package.
 type Handler struct {
-	svc *Service
-	tpl *template.Template
+	svc   *Service
+	tpl   *template.Template
+	cache *cache.RedisCache
 }
 
-// NewHandler creates a new instance of Handler with the provided service and template dependencies.
-func NewHandler(svc *Service, tpl *template.Template) *Handler {
-	return &Handler{svc: svc, tpl: tpl}
+// NewHandler creates a new instance of Handler with the provided service, template, and cache dependencies.
+func NewHandler(svc *Service, tpl *template.Template, cache *cache.RedisCache) *Handler {
+	return &Handler{svc: svc, tpl: tpl, cache: cache}
 }
 
 // Account page
@@ -76,6 +81,7 @@ func (h *Handler) UpdateMerhantBankDetails(w http.ResponseWriter, r *http.Reques
 	err := h.svc.UpdateBankDetails(ctx, username, req)
 	switch {
 	case err == nil:
+		h.cache.InvalidateMerchant(username)
 		writeErr(w, http.StatusOK, "Bank details updated")
 	case errors.Is(err, ErrInvalidBankDetails):
 		writeErr(w, http.StatusBadRequest, "All bank details field are required")
@@ -152,12 +158,25 @@ func (h *Handler) MerchantDashboardData(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	cacheKey := cache.MerchantDashboardKey(username)
+	var cachedSummary MerchantSummary
+	if err := h.cache.GetJSON(cacheKey, &cachedSummary); err == nil {
+		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
+			Success: true,
+			Message: "Dashboard data retrieved successfully",
+			Data:    cachedSummary,
+		})
+		return
+	}
+
 	summary, err := h.svc.GetDashboard(ctx, username)
 	if err != nil {
 		log.Printf("MerchantDashboardDataHandler: failed for username %s: %v", username, err)
 		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Error fetching dashboard data"})
 		return
 	}
+
+	_ = h.cache.SetJSON(cacheKey, summary, 3*time.Minute)
 
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
 		Success: true,
@@ -207,6 +226,8 @@ func (h *Handler) WithdrawHandler(w http.ResponseWriter, r *http.Request) {
 	result, err := h.svc.Withdraw(ctx, username, req.Amount)
 	switch {
 	case err == nil:
+		h.cache.InvalidateMerchant(username)
+		h.cache.InvalidateAdmin()
 		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
 			Success: true, Message: "Withdrawal is being processed",
 			Data: map[string]any{"transaction_id": result.TransactionID, "amount": result.Amount, "status": result.Status},
@@ -305,7 +326,7 @@ func (h *Handler) TransactionHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) XenditDisbursementWebhook(w http.ResponseWriter, r *http.Request) {
 	xenditToken := os.Getenv("XENDIT_WEBHOOK_KEY")
 	callbackToken := r.Header.Get("x-callback-token")
-	if xenditToken != "" && callbackToken != xenditToken {
+	if xenditToken == "" || subtle.ConstantTimeCompare([]byte(callbackToken), []byte(xenditToken)) != 1 {
 		log.Println("Invalid x-callback-token for disbursement")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -330,6 +351,8 @@ func (h *Handler) XenditDisbursementWebhook(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
+	h.cache.InvalidateAdmin()
 
 	w.WriteHeader(http.StatusOK)
 }

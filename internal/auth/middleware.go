@@ -2,39 +2,78 @@ package auth
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
 )
 
-// visitorStore holds a per-IP rate limiter.
-// TODO: extract to Redis for multi-instance deployments.
-var (
-	visitors   = make(map[string]*rate.Limiter)
-	visitorsMu sync.Mutex
-)
-
-// getVisitor returns the rate limiter for the given IP, creating one if needed.
-// Allows 2 requests per second with a burst ceiling of 2.
-func getVisitor(ip string) *rate.Limiter {
-	visitorsMu.Lock()
-	defer visitorsMu.Unlock()
-
-	if limiter, ok := visitors[ip]; ok {
-		return limiter
-	}
-	limiter := rate.NewLimiter(rate.Every(time.Second), 2)
-	visitors[ip] = limiter
-	return limiter
+type authVisitor struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
 }
 
-// RateLimitMiddleware rejects requests that exceed the per-IP rate limit with
-// a 429 JSON response.
+var (
+	authVisitors = make(map[string]*authVisitor)
+	authMu       sync.Mutex
+)
+
+func init() {
+	go func() {
+		for {
+			time.Sleep(5 * time.Minute)
+			authMu.Lock()
+			for ip, v := range authVisitors {
+				if time.Since(v.lastSeen) > 10*time.Minute {
+					delete(authVisitors, ip)
+				}
+			}
+			authMu.Unlock()
+		}
+	}()
+}
+
+func getAuthVisitor(ip string) *rate.Limiter {
+	authMu.Lock()
+	defer authMu.Unlock()
+
+	v, exists := authVisitors[ip]
+	if !exists {
+		limiter := rate.NewLimiter(rate.Every(1*time.Second), 5)
+		authVisitors[ip] = &authVisitor{limiter: limiter, lastSeen: time.Now()}
+		return limiter
+	}
+
+	v.lastSeen = time.Now()
+	return v.limiter
+}
+
+func extractAuthIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+		return strings.TrimSpace(realIP)
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// RateLimitMiddleware rejects requests that exceed the per-IP rate limit with a 429 JSON response.
 func RateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !getVisitor(r.RemoteAddr).Allow() {
+		ip := extractAuthIP(r)
+		limiter := getAuthVisitor(ip)
+
+		if !limiter.Allow() {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
 			json.NewEncoder(w).Encode(map[string]any{
@@ -43,6 +82,6 @@ func RateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			})
 			return
 		}
-		next.ServeHTTP(w, r)
+		next(w, r)
 	}
 }

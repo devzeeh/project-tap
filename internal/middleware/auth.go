@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -73,12 +74,13 @@ func RequireAuth(allowedRoles ...string) func(http.Handler) http.Handler {
 						newAccess, newRefresh, err := authentication.GenerateTokens(refreshClaims.UserID, refreshClaims.Role)
 						if err == nil {
 							// Set new cookies
+							isSecure := os.Getenv("COOKIE_SECURE") == "true" || os.Getenv("ENV") == "production"
 							http.SetCookie(w, &http.Cookie{
 								Name:     "jwt",
 								Value:    newAccess,
 								Expires:  time.Now().Add(15 * time.Minute),
 								HttpOnly: true,
-								Secure:   true,
+								Secure:   isSecure,
 								SameSite: http.SameSiteLaxMode,
 								Path:     "/",
 							})
@@ -87,7 +89,7 @@ func RequireAuth(allowedRoles ...string) func(http.Handler) http.Handler {
 								Value:    newRefresh,
 								Expires:  time.Now().Add(7 * 24 * time.Hour),
 								HttpOnly: true,
-								Secure:   true,
+								Secure:   isSecure,
 								SameSite: http.SameSiteLaxMode,
 								Path:     "/",
 							})
@@ -126,4 +128,10 @@ func RequireAuth(allowedRoles ...string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// GetUserClaims retrieves the authenticated user claims from the request context.
+func GetUserClaims(r *http.Request) (*authentication.JWTClaims, bool) {
+	claims, ok := r.Context().Value(UserClaimsKey).(*authentication.JWTClaims)
+	return claims, ok
 }

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project TAP - Test Console (v0.0.2)</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --success: #22c55e;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding: 24px; min-height: 100vh; }
+    .container { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+    header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    h1 { font-size: 1.5rem; display: flex; align-items: center; gap: 10px; }
+    .badge { font-size: 0.75rem; padding: 4px 8px; border-radius: 999px; background: rgba(56, 189, 248, 0.15); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.3); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+    .card h2 { font-size: 1.1rem; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    label { font-size: 0.85rem; color: var(--text-muted); }
+    input, select, button { border-radius: 8px; font-size: 0.95rem; padding: 10px 12px; outline: none; }
+    input, select { background: #0b1120; border: 1px solid var(--border); color: var(--text); }
+    input:focus, select:focus { border-color: var(--accent); }
+    button { background: var(--accent); color: #0b1120; border: none; font-weight: 600; cursor: pointer; transition: 0.2s ease; }
+    button:hover { background: var(--accent-hover); }
+    button.secondary { background: #334155; color: var(--text); }
+    button.secondary:hover { background: #475569; }
+    button.danger { background: var(--danger); color: #fff; }
+    .row { display: flex; gap: 10px; }
+    .row > * { flex: 1; }
+    .status-pill { font-size: 0.85rem; padding: 4px 10px; border-radius: 6px; display: inline-block; width: fit-content; }
+    .status-active { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+    .status-offline { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+    pre { background: #050814; border: 1px solid var(--border); border-radius: 8px; padding: 14px; font-size: 0.85rem; color: #a5f3fc; overflow-x: auto; max-height: 380px; white-space: pre-wrap; word-break: break-word; }
+    .log-meta { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Project TAP - Test Console <span class="badge">v0.0.2</span></h1>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 4px;">Quickly test User, Card Status, Cache, and Auth APIs</p>
+      </div>
+      <div id="authStatusBadge" class="status-pill status-offline">Not Logged In</div>
+    </header>
+
+    <div class="grid">
+      <!-- 1. Authentication -->
+      <div class="card">
+        <h2>1. User Authentication</h2>
+        <div class="form-group">
+          <label>Username / Identifier</label>
+          <input type="text" id="loginIdentifier" value="jumy" placeholder="e.g. jumy">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="loginPassword" placeholder="Enter password">
+        </div>
+        <div class="row">
+          <button id="btnLogin" onclick="login()">Login & Save Token</button>
+          <button class="secondary" onclick="logout()">Clear Token</button>
+        </div>
+        <div style="font-size: 0.8rem; color: var(--text-muted);">
+          Active Token: <span id="tokenPreview" style="color: var(--accent);">None</span>
+        </div>
+      </div>
+
+      <!-- 2. Card Status Management -->
+      <div class="card">
+        <h2>2. Card Status Management</h2>
+        <div class="form-group">
+          <label>Target Username</label>
+          <input type="text" id="targetUsername" value="jumy" placeholder="e.g. jumy">
+        </div>
+        <div class="form-group">
+          <label>New Card Status</label>
+          <select id="cardStatusSelect">
+            <option value="active">active</option>
+            <option value="inactive">inactive</option>
+            <option value="blocked">blocked</option>
+            <option value="lost">lost</option>
+          </select>
+        </div>
+        <button id="btnUpdateCard" onclick="updateCardStatus()">POST /v1/user/{username}/card/status</button>
+        <button class="secondary" onclick="requestReplacement()">POST /v1/user/{username}/card/replace</button>
+      </div>
+
+      <!-- 3. Cache & Read Verification -->
+      <div class="card">
+        <h2>3. Verify Cached Endpoints</h2>
+        <div class="form-group">
+          <label>Inspect Data for Username</label>
+          <input type="text" id="cacheUsername" value="jumy">
+        </div>
+        <button onclick="fetchDashboard()">GET /v1/user/{username} (Dashboard)</button>
+        <button class="secondary" onclick="fetchTransactions()">GET /v1/user/{username}/transactions</button>
+        <div style="font-size: 0.8rem; color: var(--text-muted);">
+          Tip: Click twice within 5 mins to observe Redis Cache Hit latency in terminal!
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Response Viewer -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+        <h2>Live API Response</h2>
+        <span id="responseStatus" class="badge">Ready</span>
+      </div>
+      <div class="log-meta">
+        <span id="requestMeta">Endpoint: None</span>
+        <span id="latencyMeta">Latency: -</span>
+      </div>
+      <pre id="responseLog">Waiting for action...</pre>
+    </div>
+  </div>
+
+  <script>
+    let authToken = localStorage.getItem('tap_jwt') || '';
+    let loggedInUser = localStorage.getItem('tap_user') || '';
+
+    function updateAuthUI() {
+      const badge = document.getElementById('authStatusBadge');
+      const tokenPreview = document.getElementById('tokenPreview');
+      if (authToken) {
+        badge.className = 'status-pill status-active';
+        badge.textContent = `Logged in as: ${loggedInUser || 'User'}`;
+        tokenPreview.textContent = `${authToken.substring(0, 20)}...`;
+      } else {
+        badge.className = 'status-pill status-offline';
+        badge.textContent = 'Not Logged In';
+        tokenPreview.textContent = 'None';
+      }
+    }
+    updateAuthUI();
+
+    async function sendRequest(url, method = 'GET', body = null) {
+      const statusBadge = document.getElementById('responseStatus');
+      const reqMeta = document.getElementById('requestMeta');
+      const latencyMeta = document.getElementById('latencyMeta');
+      const logBox = document.getElementById('responseLog');
+
+      reqMeta.textContent = `${method} ${url}`;
+      statusBadge.textContent = 'Loading...';
+      statusBadge.style.color = 'var(--accent)';
+      logBox.textContent = 'Executing request...';
+
+      const startTime = performance.now();
+      const headers = { 'Content-Type': 'application/json' };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+
+      try {
+        const options = { method, headers, credentials: 'include' };
+        if (body) options.body = JSON.stringify(body);
+
+        const res = await fetch(url, options);
+        const duration = Math.round(performance.now() - startTime);
+        latencyMeta.textContent = `Latency: ${duration}ms`;
+        statusBadge.textContent = `${res.status} ${res.statusText}`;
+
+        if (res.ok) {
+          statusBadge.style.color = 'var(--success)';
+        } else {
+          statusBadge.style.color = 'var(--danger)';
+        }
+
+        const contentType = res.headers.get('content-type') || '';
+        let data;
+        if (contentType.includes('application/json')) {
+          data = await res.json();
+          logBox.textContent = JSON.stringify(data, null, 2);
+        } else {
+          data = await res.text();
+          logBox.textContent = data;
+        }
+        return { res, data };
+      } catch (err) {
+        const duration = Math.round(performance.now() - startTime);
+        latencyMeta.textContent = `Latency: ${duration}ms`;
+        statusBadge.textContent = 'Network Error';
+        statusBadge.style.color = 'var(--danger)';
+        logBox.textContent = `Error connecting to backend: ${err.message}`;
+        return { error: err };
+      }
+    }
+
+    async function login() {
+      const identifier = document.getElementById('loginIdentifier').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      if (!identifier || !password) {
+        alert('Please enter identifier and password');
+        return;
+      }
+
+      const { res, data } = await sendRequest('/v1/loginauth', 'POST', { identifier, password });
+      if (res && res.ok) {
+        const token = data.access_token || data.token || (data.data && data.data.access_token);
+        const user = data.username || identifier;
+        if (token) {
+          authToken = token;
+          loggedInUser = user;
+          localStorage.setItem('tap_jwt', authToken);
+          localStorage.setItem('tap_user', loggedInUser);
+          document.getElementById('targetUsername').value = loggedInUser;
+          document.getElementById('cacheUsername').value = loggedInUser;
+          updateAuthUI();
+        }
+      }
+    }
+
+    function logout() {
+      authToken = '';
+      loggedInUser = '';
+      localStorage.removeItem('tap_jwt');
+      localStorage.removeItem('tap_user');
+      updateAuthUI();
+      document.getElementById('responseLog').textContent = 'Token cleared.';
+      document.getElementById('responseStatus').textContent = 'Logged Out';
+    }
+
+    async function updateCardStatus() {
+      const username = document.getElementById('targetUsername').value.trim();
+      const status = document.getElementById('cardStatusSelect').value;
+      await sendRequest(`/v1/user/${encodeURIComponent(username)}/card/status`, 'POST', { status });
+    }
+
+    async function requestReplacement() {
+      const username = document.getElementById('targetUsername').value.trim();
+      await sendRequest(`/v1/user/${encodeURIComponent(username)}/card/replace`, 'POST', {});
+    }
+
+    async function fetchDashboard() {
+      const username = document.getElementById('cacheUsername').value.trim();
+      await sendRequest(`/v1/user/${encodeURIComponent(username)}`, 'GET');
+    }
+
+    async function fetchTransactions() {
+      const username = document.getElementById('cacheUsername').value.trim();
+      await sendRequest(`/v1/user/${encodeURIComponent(username)}/transactions`, 'GET');
+    }
+  </script>
+</body>
+</html>

@@ -8,14 +8,12 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecret = []byte(getEnv("JWT_SECRET", "super-secret-key")) // fallback for dev only
-
-// getEnv retrieves the value of the environment variable named by the key, or returns the fallback value if not present.
-func getEnv(key, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok {
-		return value
+func getJWTSecret() []byte {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "super-secret-key"
 	}
-	return fallback
+	return []byte(secret)
 }
 
 // JWTClaims represents the custom and standard claims embedded within the JSON Web Token.
@@ -49,7 +47,7 @@ func ValidateJWT(tokenString string) (*JWTClaims, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
-		return jwtSecret, nil
+		return getJWTSecret(), nil
 	})
 	if err != nil {
 		return nil, err
@@ -76,5 +74,5 @@ func signToken(userID, role, subject string, ttl time.Duration) (string, error) 
 			Subject:   subject,
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret)
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(getJWTSecret())
 }

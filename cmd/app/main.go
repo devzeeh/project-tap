@@ -6,10 +6,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
+
 	"project-tap/internal/admin"
 	"project-tap/internal/auth"
 	"project-tap/internal/merchant"
 	"project-tap/internal/middleware"
+	"project-tap/internal/pkg/cache"
 	"project-tap/internal/pkg/database"
 	"project-tap/internal/pkg/storage"
 	"project-tap/internal/user"
@@ -18,7 +22,7 @@ import (
 )
 
 var (
-	tpl *template.Template
+	tpl = template.New("app")
 )
 
 func main() {
@@ -27,13 +31,20 @@ func main() {
 	if err != nil {
 		// Fallback: try loading from current directory
 		if err := godotenv.Load(); err != nil {
-			log.Fatalf("Error loading .env file: %v", err)
+			log.Printf("Notice: .env file not loaded (%v), using system environment variables", err)
 		}
 	}
 
 	// read .env VALUES
 	port := os.Getenv("PORT")
-	serverAddress := os.Getenv("SERVER_PORT")
+	if port == "" {
+		port = "3001"
+	}
+	serverAddress := os.Getenv("SERVER_ADDR")
+	if serverAddress == "" {
+		serverAddress = "0.0.0.0"
+	}
+	listenAddr := fmt.Sprintf("%s:%s", serverAddress, port)
 
 	// Setup Database using the new database package
 	db, err := database.Connect()
@@ -41,6 +52,14 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+
+	// Setup Redis Cache
+	redisCache, err := cache.NewRedisCache()
+	if err != nil {
+		log.Printf("Warning: Failed to connect to Redis cache: %v (Cache features may not work)", err)
+	} else {
+		log.Println("Successfully connected to Redis")
+	}
 
 	store := database.NewStore(db)
 
@@ -57,14 +76,16 @@ func main() {
 
 	adminRepo := admin.NewRepository(store)
 	adminSvc := admin.NewService(adminRepo)
-	adminHanlder := admin.NewHandler(adminSvc, tpl)
+	adminHandler := admin.NewHandler(adminSvc, tpl, redisCache)
 
 	merchantRepo := merchant.NewRepository(store)
 	payoutGateway := merchant.NewXenditPayoutGateway(os.Getenv("XENDIT_SECRET_KEY"))
 	merchantSvc := merchant.NewService(merchantRepo, r2Storage, payoutGateway)
-	merchantHandler := merchant.NewHandler(merchantSvc, tpl)
+	merchantHandler := merchant.NewHandler(merchantSvc, tpl, redisCache)
 
-	userHandler := user.NewHandler(store, tpl)
+	userRepo := user.NewRepository(store)
+	userSvc := user.NewService(userRepo)
+	userHandler := user.NewHandler(userSvc, tpl, redisCache)
 
 	// Middleware definitions
 	requireCustomer := middleware.RequireAuth("customer")
@@ -75,52 +96,48 @@ func main() {
 	mux := http.NewServeMux()
 	// register routes
 	auth.RegisterRoutes(mux, authHandler)
-
-	// Routes admin endpoints
-	admin.RegisterRoutes(mux, adminHanlder, requireAdmin)
+	admin.RegisterRoutes(mux, adminHandler, requireAdmin)
 	merchant.RegisterRoutes(mux, merchantHandler, requireMerchant)
+	user.RegisterRoutes(mux, userHandler, requireCustomer)
 
-	// Customer Routes
-	mux.Handle("GET /u/{username}", requireCustomer(http.HandlerFunc(userHandler.ProfileView)))
-	mux.Handle("PATCH /u/{username}/profile/edit", requireCustomer(http.HandlerFunc(userHandler.ProfileEdit)))
-	mux.Handle("POST /v1/user/{username}/profile/verify-password", requireCustomer(http.HandlerFunc(userHandler.ProfileVerifyPassword)))
-	mux.Handle("PUT /u/{username}/profile/password", requireCustomer(http.HandlerFunc(userHandler.ProfileChangePassword)))
-	mux.Handle("GET /u/{username}/dashboard", requireCustomer(http.HandlerFunc(userHandler.DashboardView)))
-	mux.Handle("GET /u/{username}/card", requireCustomer(http.HandlerFunc(userHandler.CardView)))
-	mux.Handle("POST /v1/user/{username}/card/status", requireCustomer(http.HandlerFunc(userHandler.UpdateCardStatus)))
-	mux.Handle("POST /v1/user/{username}/card/replace", requireCustomer(http.HandlerFunc(userHandler.RequestReplacement)))
-	mux.Handle("GET /u/{username}/settings", requireCustomer(http.HandlerFunc(userHandler.SettingsView)))
-	mux.Handle("GET /u/{username}/topup", requireCustomer(http.HandlerFunc(userHandler.TopUpView)))
-	// Your frontend calls this to get the Xendit URL
-	mux.Handle("POST /api/topup/create-session/{username}", requireCustomer(http.HandlerFunc(userHandler.CreateXenditInvoice)))
+	// Serve the basic frontend if directory exists
+	if _, err := os.Stat("./frontend"); err == nil {
+		mux.Handle("/", http.FileServer(http.Dir("./frontend")))
+	}
 
-	// Payment gateway endpoints
-	// Xendit's servers call this behind the scenes when the payment is done
-	mux.HandleFunc("POST /api/webhooks/xendit/invoice", userHandler.XenditWebhook)
-	mux.Handle("POST /v1/user/{username}/topup/checkout", requireCustomer(http.HandlerFunc(userHandler.CreateXenditInvoice)))
-	mux.Handle("GET /u/{username}/transaction", requireCustomer(http.HandlerFunc(userHandler.TransactionView)))
-	mux.Handle("GET /u/{username}/transactions", requireCustomer(http.HandlerFunc(userHandler.TransactionView)))
+	// Wrap server handler with CORS middleware
+	handler := corsMiddleware(mux)
 
-	mux.Handle("GET /v1/user/{username}", requireCustomer(http.HandlerFunc(userHandler.DashboardHandler)))
-	mux.Handle("GET /v1/user/{username}/transactions", requireCustomer(http.HandlerFunc(userHandler.TransactionsJSONHandler)))
-
-	// Serve the basic frontend
-	mux.Handle("/", http.FileServer(http.Dir("./frontend")))
+	// Configure HTTP Server with timeouts
+	srv := &http.Server{
+		Addr:         listenAddr,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 
 	// Start Server
-	fmt.Println("Server started on: http://" + serverAddress + ":" + port)
-	if err := http.ListenAndServe(serverAddress+":"+port, mux); err != nil {
-		log.Fatal(err)
+	fmt.Println("Server started on: http://" + listenAddr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Server failed: %v", err)
 	}
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
-	allowedOrigins := map[string]bool{
-		os.Getenv("CORS_ALLOWED_ORIGINS"): true, // Load from .env
-		//"http://localhost:5173":           true, // Vue dev
-		//"http://localhost:3001":           true, // Go dev
-		//"https://unicard.app":   		   true, // production
+	allowedOrigins := make(map[string]bool)
+	if originsEnv := os.Getenv("CORS_ALLOWED_ORIGINS"); originsEnv != "" {
+		for _, origin := range strings.Split(originsEnv, ",") {
+			if trimmed := strings.TrimSpace(origin); trimmed != "" {
+				allowedOrigins[trimmed] = true
+			}
+		}
 	}
+	if len(allowedOrigins) == 0 {
+		allowedOrigins["http://localhost:5173"] = true
+		allowedOrigins["http://localhost:3001"] = true
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if allowedOrigins[origin] {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -25,11 +26,17 @@ func Connect() (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// Configure connection pool settings
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(15 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
 	// Always verify connection
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("database connection failed: %w", err)
 	}
 
-	log.Println("Database connection established")
+	log.Println("Database connection established with connection pool settings")
 	return db, nil
 }
