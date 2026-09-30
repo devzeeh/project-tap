@@ -83,7 +83,9 @@ func main() {
 	merchantSvc := merchant.NewService(merchantRepo, r2Storage, payoutGateway)
 	merchantHandler := merchant.NewHandler(merchantSvc, tpl, redisCache)
 
-	userHandler := user.NewHandler(store, tpl, redisCache)
+	userRepo := user.NewRepository(store)
+	userSvc := user.NewService(userRepo)
+	userHandler := user.NewHandler(userSvc, tpl, redisCache)
 
 	// Middleware definitions
 	requireCustomer := middleware.RequireAuth("customer")
@@ -94,34 +96,9 @@ func main() {
 	mux := http.NewServeMux()
 	// register routes
 	auth.RegisterRoutes(mux, authHandler)
-
-	// Routes admin endpoints
 	admin.RegisterRoutes(mux, adminHandler, requireAdmin)
 	merchant.RegisterRoutes(mux, merchantHandler, requireMerchant)
-
-	// Customer Routes
-	mux.Handle("GET /u/{username}", requireCustomer(http.HandlerFunc(userHandler.ProfileView)))
-	mux.Handle("PATCH /u/{username}/profile/edit", requireCustomer(http.HandlerFunc(userHandler.ProfileEdit)))
-	mux.Handle("POST /v1/user/{username}/profile/verify-password", requireCustomer(http.HandlerFunc(userHandler.ProfileVerifyPassword)))
-	mux.Handle("PUT /u/{username}/profile/password", requireCustomer(http.HandlerFunc(userHandler.ProfileChangePassword)))
-	mux.Handle("GET /u/{username}/dashboard", requireCustomer(http.HandlerFunc(userHandler.DashboardView)))
-	mux.Handle("GET /u/{username}/card", requireCustomer(http.HandlerFunc(userHandler.CardView)))
-	mux.Handle("POST /v1/user/{username}/card/status", requireCustomer(http.HandlerFunc(userHandler.UpdateCardStatus)))
-	mux.Handle("POST /v1/user/{username}/card/replace", requireCustomer(http.HandlerFunc(userHandler.RequestReplacement)))
-	mux.Handle("GET /u/{username}/settings", requireCustomer(http.HandlerFunc(userHandler.SettingsView)))
-	mux.Handle("GET /u/{username}/topup", requireCustomer(http.HandlerFunc(userHandler.TopUpView)))
-	// Your frontend calls this to get the Xendit URL
-	mux.Handle("POST /api/topup/create-session/{username}", requireCustomer(http.HandlerFunc(userHandler.CreateXenditInvoice)))
-
-	// Payment gateway endpoints
-	// Xendit's servers call this behind the scenes when the payment is done
-	mux.HandleFunc("POST /api/webhooks/xendit/invoice", userHandler.XenditWebhook)
-	mux.Handle("POST /v1/user/{username}/topup/checkout", requireCustomer(http.HandlerFunc(userHandler.CreateXenditInvoice)))
-	mux.Handle("GET /u/{username}/transaction", requireCustomer(http.HandlerFunc(userHandler.TransactionView)))
-	mux.Handle("GET /u/{username}/transactions", requireCustomer(http.HandlerFunc(userHandler.TransactionView)))
-
-	mux.Handle("GET /v1/user/{username}", requireCustomer(http.HandlerFunc(userHandler.DashboardHandler)))
-	mux.Handle("GET /v1/user/{username}/transactions", requireCustomer(http.HandlerFunc(userHandler.TransactionsJSONHandler)))
+	user.RegisterRoutes(mux, userHandler, requireCustomer)
 
 	// Serve the basic frontend if directory exists
 	if _, err := os.Stat("./frontend"); err == nil {
