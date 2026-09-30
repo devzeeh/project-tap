@@ -6,6 +6,8 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
+
 	jsonwrite "project-tap/internal/pkg/handler"
 )
 
@@ -117,6 +119,8 @@ func (h *Handler) LoginAuthHandler(w http.ResponseWriter, r *http.Request) {
 		ID:          result.ID,
 		Username:    result.Username,
 		RedirectURL: result.RedirectURL,
+		AccessToken: result.Tokens.Access,
+		Token:       result.Tokens.Access,
 	})
 }
 
@@ -381,12 +385,13 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 
 // setAuthCookies attaches the JWT and refresh tokens to the HTTP response.
 func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
+	isSecure := os.Getenv("COOKIE_SECURE") == "true" || os.Getenv("ENV") == "production"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "jwt",
 		Value:    accessToken,
 		MaxAge:   int(AccessTokenTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   isSecure,
 		SameSite: http.SameSiteLaxMode,
 		Path:     "/",
 	})
@@ -395,7 +400,7 @@ func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
 		Value:    refreshToken,
 		MaxAge:   int(RefreshTokenTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   isSecure,
 		SameSite: http.SameSiteLaxMode,
 		Path:     "/",
 	})

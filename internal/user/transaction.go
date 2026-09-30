@@ -4,11 +4,35 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
+	"project-tap/internal/pkg/cache"
 	jsonwrite "project-tap/internal/pkg/handler"
 
 	"github.com/shopspring/decimal"
 )
+
+type TxnResponse struct {
+	TransactionID string          `json:"transaction_id"`
+	TerminalID    string          `json:"terminal_id"`
+	Date          string          `json:"date"`
+	Time          string          `json:"time"`
+	Description   string          `json:"description"`
+	Type          string          `json:"type"`
+	Amount        float64         `json:"amount"`
+	Status        string          `json:"status"`
+	MerchantName  string          `json:"merchant_name"`
+	MerchantID    string          `json:"merchant_id"`
+	ServiceFee    float64         `json:"service_fee"`
+	PointsEarned  decimal.Decimal `json:"points_earned"`
+	Sender        string          `json:"sender"`
+	Receiver      string          `json:"receiver"`
+}
+
+type TransactionsListResponse struct {
+	Success      bool          `json:"success"`
+	Transactions []TxnResponse `json:"transactions"`
+}
 
 // TransactionView renders the transaction.html template
 func (h *Handler) TransactionView(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +77,13 @@ func (h *Handler) TransactionsJSONHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	cacheKey := cache.UserTransactionsKey(username)
+	var cached TransactionsListResponse
+	if err := h.Cache.GetJSON(cacheKey, &cached); err == nil {
+		jsonwrite.WriteJSON(w, http.StatusOK, cached)
+		return
+	}
+
 	txnQuery := `
 			(SELECT 
 				t.transaction_id, 
@@ -93,23 +124,6 @@ func (h *Handler) TransactionsJSONHandler(w http.ResponseWriter, r *http.Request
 			ORDER BY created_at DESC
 		`
 	rows, err := h.Store.Query(txnQuery, username, username)
-
-	type TxnResponse struct {
-		TransactionID string          `json:"transaction_id"`
-		TerminalID    string          `json:"terminal_id"`
-		Date          string          `json:"date"`
-		Time          string          `json:"time"`
-		Description   string          `json:"description"`
-		Type          string          `json:"type"`
-		Amount        float64         `json:"amount"`
-		Status        string          `json:"status"`
-		MerchantName  string          `json:"merchant_name"`
-		MerchantID    string          `json:"merchant_id"`
-		ServiceFee    float64         `json:"service_fee"`
-		PointsEarned  decimal.Decimal `json:"points_earned"`
-		Sender        string          `json:"sender"`
-		Receiver      string          `json:"receiver"`
-	}
 
 	var transactions []TxnResponse
 	if err == nil {
@@ -173,13 +187,11 @@ func (h *Handler) TransactionsJSONHandler(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	response := struct {
-		Success      bool          `json:"success"`
-		Transactions []TxnResponse `json:"transactions"`
-	}{
+	response := TransactionsListResponse{
 		Success:      true,
 		Transactions: transactions,
 	}
 
+	_ = h.Cache.SetJSON(cacheKey, response, 3*time.Minute)
 	jsonwrite.WriteJSON(w, http.StatusOK, response)
 }

@@ -20,6 +20,8 @@ type LoginResponse struct {
 	ID          string `json:"id,omitempty"` // Optional: include user ID in response
 	Username    string `json:"username"`     // Optional: include user ID in response
 	RedirectURL string `json:"redirect_url,omitempty"`
+	AccessToken string `json:"access_token,omitempty"`
+	Token       string `json:"token,omitempty"`
 }
 
 // Auth Handler (POST) - Converted to JSON API

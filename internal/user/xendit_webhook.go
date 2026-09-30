@@ -135,6 +135,19 @@ func (h *Handler) XenditWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var username string
+		_ = h.Store.QueryRow(`
+			SELECT u.username 
+			FROM users u 
+			JOIN cards c ON u.user_id = c.user_id 
+			JOIN top_ups tu ON c.card_number = tu.card_number 
+			WHERE tu.topup_id = ?
+		`, externalID).Scan(&username)
+		if username != "" {
+			h.Cache.InvalidateUser(username)
+		}
+		h.Cache.InvalidateAdmin()
+
 	// log if payment failed, expired, or canceled
 	case "PENDING":
 		_, _ = h.Store.Exec(`UPDATE top_ups SET status = ? WHERE topup_id = ?`, strings.ToLower(payload.Status), payload.ExternalID)
@@ -152,6 +165,18 @@ func (h *Handler) XenditWebhook(w http.ResponseWriter, r *http.Request) {
 			if errDelete != nil {
 				log.Println("Error deleting pending transaction:", errDelete)
 			}
+		}
+
+		var username string
+		_ = h.Store.QueryRow(`
+			SELECT u.username 
+			FROM users u 
+			JOIN cards c ON u.user_id = c.user_id 
+			JOIN top_ups tu ON c.card_number = tu.card_number 
+			WHERE tu.topup_id = ?
+		`, payload.ExternalID).Scan(&username)
+		if username != "" {
+			h.Cache.InvalidateUser(username)
 		}
 	}
 

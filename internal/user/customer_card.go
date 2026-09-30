@@ -69,6 +69,9 @@ func (h *Handler) UpdateCardStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.Cache.InvalidateUser(username)
+	h.Cache.InvalidateAdmin()
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"success": true}`))
 }
@@ -123,11 +126,19 @@ func (h *Handler) RequestReplacement(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	_, err = tx.Exec("UPDATE cards SET balance = balance - 150.0, status = 'blocked' WHERE user_id = ?", userID)
+	res, err := tx.Exec("UPDATE cards SET balance = balance - 150.0, status = 'blocked' WHERE user_id = ? AND balance >= 150.0", userID)
 	if err != nil {
 		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{
 			Success: false,
 			Message: "Failed to update card",
+		})
+		return
+	}
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
+			Success: false,
+			Message: "Insufficient balance. Replacement fee is 150 PHP.",
 		})
 		return
 	}
@@ -154,6 +165,9 @@ func (h *Handler) RequestReplacement(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	h.Cache.InvalidateUser(username)
+	h.Cache.InvalidateAdmin()
 
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
 		Success: true,

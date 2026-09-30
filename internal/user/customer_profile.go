@@ -206,6 +206,13 @@ func (h *Handler) ProfileEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Invalidate user and admin caches
+	h.Cache.InvalidateUser(username)
+	if req.Username != "" && req.Username != username {
+		h.Cache.InvalidateUser(req.Username)
+	}
+	h.Cache.InvalidateAdmin()
+
 	msg := "Profile updated successfully"
 	if emailChanged {
 		msg = "Profile updated. Please check your current email to approve the change."

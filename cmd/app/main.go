@@ -13,6 +13,7 @@ import (
 	"project-tap/internal/auth"
 	"project-tap/internal/merchant"
 	"project-tap/internal/middleware"
+	"project-tap/internal/pkg/cache"
 	"project-tap/internal/pkg/database"
 	"project-tap/internal/pkg/storage"
 	"project-tap/internal/user"
@@ -52,6 +53,14 @@ func main() {
 	}
 	defer db.Close()
 
+	// Setup Redis Cache
+	redisCache, err := cache.NewRedisCache()
+	if err != nil {
+		log.Printf("Warning: Failed to connect to Redis cache: %v (Cache features may not work)", err)
+	} else {
+		log.Println("Successfully connected to Redis")
+	}
+
 	store := database.NewStore(db)
 
 	// Initialize R2 Storage
@@ -67,14 +76,14 @@ func main() {
 
 	adminRepo := admin.NewRepository(store)
 	adminSvc := admin.NewService(adminRepo)
-	adminHandler := admin.NewHandler(adminSvc, tpl)
+	adminHandler := admin.NewHandler(adminSvc, tpl, redisCache)
 
 	merchantRepo := merchant.NewRepository(store)
 	payoutGateway := merchant.NewXenditPayoutGateway(os.Getenv("XENDIT_SECRET_KEY"))
 	merchantSvc := merchant.NewService(merchantRepo, r2Storage, payoutGateway)
-	merchantHandler := merchant.NewHandler(merchantSvc, tpl)
+	merchantHandler := merchant.NewHandler(merchantSvc, tpl, redisCache)
 
-	userHandler := user.NewHandler(store, tpl)
+	userHandler := user.NewHandler(store, tpl, redisCache)
 
 	// Middleware definitions
 	requireCustomer := middleware.RequireAuth("customer")

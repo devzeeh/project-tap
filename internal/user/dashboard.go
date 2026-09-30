@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shopspring/decimal"
+	"project-tap/internal/pkg/cache"
 	jsonwrite "project-tap/internal/pkg/handler"
+	"github.com/shopspring/decimal"
 )
 
 type Transaction struct {
@@ -47,6 +48,13 @@ type DashboardUser struct {
 }
 
 func (h *Handler) GetDashboardUser(userID string) (DashboardUser, error) {
+	// 1. Try to get from cache first
+	cacheKey := cache.UserDashboardKey(userID)
+	var cached DashboardUser
+	if err := h.Cache.GetJSON(cacheKey, &cached); err == nil {
+		return cached, nil
+	}
+
 	var (
 		id            int
 		username      string
@@ -214,6 +222,9 @@ func (h *Handler) GetDashboardUser(userID string) (DashboardUser, error) {
 		UserStatus:         userStatus,
 		RecentTransactions: transactions,
 	}
+
+	// 2. Set to cache (expire in 5 minutes)
+	_ = h.Cache.SetJSON(cacheKey, dashboardUser, 5*time.Minute)
 
 	return dashboardUser, nil
 }
