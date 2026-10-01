@@ -451,6 +451,11 @@ func (r *Repository) UpdateWithdrawalStatus(ctx context.Context, txnID, newStatu
 		return fmt.Errorf("update withdrawal status (txn %q): %w", txnID, err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		var currentStatus string
+		if qErr := r.store.QueryRowContext(ctx, `SELECT status FROM transactions WHERE transaction_id = ? AND transaction_type = 'withdrawal'`, txnID).Scan(&currentStatus); qErr == nil && currentStatus == newStatus {
+			// Idempotent webhook delivery: status already matches
+			return nil
+		}
 		return fmt.Errorf("update withdrawal status (txn %q): %w", txnID, sql.ErrNoRows)
 	}
 	return nil

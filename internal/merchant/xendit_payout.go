@@ -43,5 +43,8 @@ func (g *XenditPayoutGateway) CreatePayout(ctx context.Context, txnID, channelCo
 		IdempotencyKey(txnID).
 		CreatePayoutRequest(*req).
 		Execute()
-	return err
+	if err != nil {
+		return err
+	}
+	return nil
 }

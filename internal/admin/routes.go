@@ -36,4 +36,5 @@ func RegisterRoutes(mux *http.ServeMux, h *Handler, requireAdmin func(http.Handl
 	mux.Handle("POST /v1/admin/{username}/deactivatecardauth", requireAdmin(http.HandlerFunc(h.DeactivateCardHanlder)))
 	mux.Handle("POST /v1/admin/{username}/deletecardauth", requireAdmin(http.HandlerFunc(h.DeleteCardHandler)))
 	mux.Handle("GET /admin/{username}/delete-cards", requireAdmin(http.HandlerFunc(h.DeleteCardView)))
+	mux.Handle("POST /v1/admin/{username}/terminal-sim/transaction", requireAdmin(http.HandlerFunc(h.TerminalSimTransactionHandler)))
 }

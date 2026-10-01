@@ -1098,18 +1098,31 @@ func (s *Service) SimTransaction(req SimRequest) (decimal.Decimal, error) {
 	}
 
 	dbType := "payment"
+	description := "Card Payment"
+	netMerchantPayout := req.Amount.Sub(serviceFee)
 	if req.Type == "Refund" {
 		dbType = "refund"
+		description = "Payment Refund"
+		netMerchantPayout = req.Amount.Neg()
 	}
 
 	var uid string
 	_ = tx.QueryRow("SELECT user_id FROM cards WHERE card_number=?", req.CardNumber).Scan(&uid)
 
-	_, err = tx.Exec(`INSERT INTO transactions (transaction_id, card_number, user_id, merchant_id, terminal_id, transaction_type, amount, service_fee, processed_by, points_earned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		transactionID, req.CardNumber, uid, req.MerchantID, terminalID, dbType, req.Amount, serviceFee, processedBy, loyaltyPoints)
+	_, err = tx.Exec(`INSERT INTO transactions (
+		transaction_id, card_number, user_id, merchant_id, terminal_id, 
+		transaction_type, amount, service_fee, net_merchant_payout, 
+		processed_by, points_earned, status, description
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)`,
+		transactionID, req.CardNumber, uid, req.MerchantID, terminalID, 
+		dbType, req.Amount, serviceFee, netMerchantPayout, 
+		processedBy, loyaltyPoints, description)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("insert transaction: %w", err)
 	}
+
+	// Also fix any previous simulation transactions that were stuck in pending
+	_, _ = tx.Exec(`UPDATE transactions SET status = 'completed', net_merchant_payout = amount - service_fee, description = 'Card Payment' WHERE transaction_id LIKE 'TXN-SIM-%' AND status = 'pending'`)
 
 	if err := tx.Commit(); err != nil {
 		return decimal.Zero, fmt.Errorf("commit: %w", err)
