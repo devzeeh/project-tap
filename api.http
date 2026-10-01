@@ -1,0 +1,203 @@
+### Project TAP - REST Client / Thunder Client API Testing
+### Base URL
+@baseUrl = http://localhost:3001
+@authToken = {{login.response.body.access_token}}
+
+###############################################################################
+# AUTHENTICATION
+###############################################################################
+
+### 1. Login as Admin
+# @name login
+POST {{baseUrl}}/v1/loginauth
+Content-Type: application/json
+
+{
+  "identifier": "admin@tap.ph",
+  "password": "Password123!"
+}
+
+### 2. Login as Customer
+POST {{baseUrl}}/v1/loginauth
+Content-Type: application/json
+
+{
+  "identifier": "johndoe",
+  "password": "Password123!"
+}
+
+### 3. Refresh Access Token
+POST {{baseUrl}}/v1/refresh
+
+### 4. Logout
+POST {{baseUrl}}/logout
+
+### 5. Check Physical Card Availability
+POST {{baseUrl}}/v1/signup/check-card
+Content-Type: application/json
+
+{
+  "card_number": "1000200030004000"
+}
+
+### 6. Send Signup OTP
+POST {{baseUrl}}/v1/signup/send-otp
+Content-Type: application/json
+
+{
+  "email": "newcustomer@example.com",
+  "contact_number": "09123456789"
+}
+
+### 7. Customer Signup
+POST {{baseUrl}}/v1/signup
+Content-Type: application/json
+
+{
+  "first_name": "Juan",
+  "last_name": "Dela Cruz",
+  "card_number": "1000200030004000",
+  "password": "Password123!",
+  "email": "newcustomer@example.com",
+  "contact_number": "09123456789"
+}
+
+###############################################################################
+# CUSTOMER API (Requires Bearer Token)
+###############################################################################
+
+### 8. Get Customer Dashboard
+GET {{baseUrl}}/v1/user/johndoe
+Authorization: Bearer {{authToken}}
+
+### 9. Get Customer Transaction History
+GET {{baseUrl}}/v1/user/johndoe/transactions
+Authorization: Bearer {{authToken}}
+
+### 10. Update Card Status (active, inactive, lost, blocked)
+POST {{baseUrl}}/v1/user/johndoe/card/status
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "status": "inactive"
+}
+
+### 11. Request Card Replacement (Locks card and deducts 150 PHP fee)
+POST {{baseUrl}}/v1/user/johndoe/card/replace
+Authorization: Bearer {{authToken}}
+
+### 12. Create Top-Up Checkout Session (Xendit)
+POST {{baseUrl}}/v1/user/johndoe/topup/checkout
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "amount": 500,
+  "payment_method": "GCASH"
+}
+
+###############################################################################
+# MERCHANT API (Requires Bearer Token)
+###############################################################################
+
+### 13. Get Merchant Account Profile & KYC Status
+GET {{baseUrl}}/v1/merchant/acmecoffee/account
+Authorization: Bearer {{authToken}}
+
+### 14. Get Merchant Dashboard Metrics
+GET {{baseUrl}}/v1/merchant/acmecoffee/dashboard
+Authorization: Bearer {{authToken}}
+
+### 15. Update Settlement Bank Account
+POST {{baseUrl}}/v1/merchant/acmecoffee/update-bank
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "settlementName": "Acme Coffee Inc.",
+  "settlementAccount": "001234567890",
+  "settlementBank": "BDO"
+}
+
+### 16. Request Merchant Withdrawal
+POST {{baseUrl}}/v1/merchant/acmecoffee/withdraw
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "amount": 1000
+}
+
+### 17. Request Payment Terminal
+POST {{baseUrl}}/v1/merchant/acmecoffee/terminals/request
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "terminal_sn": "POS-5566",
+  "notes": "Second cashier counter"
+}
+
+###############################################################################
+# SUPER ADMIN API (Requires Admin Bearer Token)
+###############################################################################
+
+### 18. Get Admin Dashboard Data
+GET {{baseUrl}}/v1/admin/admin/dashboard-data
+Authorization: Bearer {{authToken}}
+
+### 19. List Registered Merchants
+GET {{baseUrl}}/v1/admin/admin/merchants-data?page=1&limit=10
+Authorization: Bearer {{authToken}}
+
+### 20. List Payment Terminals in Inventory
+GET {{baseUrl}}/v1/admin/admin/terminals-data?page=1&limit=10
+Authorization: Bearer {{authToken}}
+
+### 21. Get Unassigned Terminals
+GET {{baseUrl}}/v1/admin/admin/terminals/unassigned
+Authorization: Bearer {{authToken}}
+
+### 22. Register New Terminal to Inventory
+POST {{baseUrl}}/v1/admin/admin/terminals/add
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "terminalSn": "POS-9988",
+  "deviceName": "Sunmi V2 Pro"
+}
+
+### 23. List Card Inventory
+GET {{baseUrl}}/v1/admin/admin/card-inventory-data
+Authorization: Bearer {{authToken}}
+
+### 24. Add New Card to Inventory
+POST {{baseUrl}}/v1/admin/admin/addcardauth
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "card_number": "1000200030004000",
+  "card_holder": "Unassigned",
+  "card_type": "standard",
+  "status": "active"
+}
+
+### 25. Get All System Transactions
+GET {{baseUrl}}/v1/admin/admin/transactions
+Authorization: Bearer {{authToken}}
+
+### 26. Simulate POS Card Payment (Consume Card Balance)
+POST {{baseUrl}}/v1/admin/admin/terminal-sim/transaction
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "card_number": "1000200030004000",
+  "merchant_id": "mrc_998811",
+  "amount": 150.00,
+  "type": "Payment"
+}
+

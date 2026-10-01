@@ -11,6 +11,7 @@ import (
 
 	"project-tap/internal/admin"
 	"project-tap/internal/auth"
+	"project-tap/internal/docs"
 	"project-tap/internal/merchant"
 	"project-tap/internal/middleware"
 	"project-tap/internal/pkg/cache"
@@ -99,6 +100,7 @@ func main() {
 	admin.RegisterRoutes(mux, adminHandler, requireAdmin)
 	merchant.RegisterRoutes(mux, merchantHandler, requireMerchant)
 	user.RegisterRoutes(mux, userHandler, requireCustomer)
+	docs.RegisterRoutes(mux)
 
 	// Serve the basic frontend if directory exists
 	if _, err := os.Stat("./frontend"); err == nil {
@@ -119,6 +121,9 @@ func main() {
 
 	// Start Server
 	fmt.Println("Server started on: http://" + listenAddr)
+	fmt.Println("Interactive API Docs (Scalar): http://" + listenAddr + "/docs")
+	fmt.Println("Interactive Swagger UI: http://" + listenAddr + "/swagger")
+	fmt.Println("OpenAPI 3.0 Specification: http://" + listenAddr + "/openapi.json")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed: %v", err)
 	}

@@ -1,0 +1,1728 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Project TAP - Tap & Pay API",
+    "version": "1.0.0",
+    "description": "Comprehensive REST API documentation for Project TAP — an automated card payment, terminal processing, merchant settlement, and user wallet system.\n\n### Authentication & Testing\n1. **Login**: Authenticate at `POST /v1/loginauth` using your username/email and password.\n2. **Authorize**: Copy the `access_token` from the login response and click the **Authorize** button (or set Bearer token in Scalar/Swagger UI).\n3. **Test**: Click **Try it out** on any endpoint to send live requests directly to the backend.",
+    "contact": {
+      "name": "Project TAP Team",
+      "url": "http://localhost:3001"
+    }
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Default server (relative to host)"
+    },
+    {
+      "url": "http://localhost:3001",
+      "description": "Local Development Server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Authentication",
+      "description": "Endpoints for user login, signup, OTP verification, password reset, and token refresh"
+    },
+    {
+      "name": "Customer API",
+      "description": "Customer dashboard, profile management, transactions history, card status, and top-ups"
+    },
+    {
+      "name": "Merchant API",
+      "description": "Merchant dashboard, settlement bank details, KYC documents, withdrawals, and terminal requests"
+    },
+    {
+      "name": "Admin API",
+      "description": "Super admin controls for merchants, POS terminals, card inventory, and audit logs"
+    },
+    {
+      "name": "Webhooks",
+      "description": "External payment gateway callbacks from Xendit"
+    }
+  ],
+  "paths": {
+    "/v1/loginauth": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Authenticate user & obtain JWT tokens",
+        "description": "Validates credentials for Customers, Merchants, or Super Admins. Sets HTTP-only cookies (`jwt` and `refresh_token`) and returns the JWT access token in the response body.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              },
+              "examples": {
+                "adminLogin": {
+                  "summary": "Admin Login",
+                  "value": {
+                    "identifier": "admin@tap.ph",
+                    "password": "Password123!"
+                  }
+                },
+                "customerLogin": {
+                  "summary": "Customer Login",
+                  "value": {
+                    "identifier": "johndoe",
+                    "password": "Password123!"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or missing fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Incorrect username or password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/logout": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Log out user",
+        "description": "Clears the authentication cookies (`jwt`, `refresh_token`) and redirects to login.",
+        "responses": {
+          "303": {
+            "description": "Redirects to /login"
+          }
+        }
+      },
+      "get": {
+        "tags": ["Authentication"],
+        "summary": "Log out user (GET method)",
+        "description": "Clears the authentication cookies (`jwt`, `refresh_token`) and redirects to login.",
+        "responses": {
+          "303": {
+            "description": "Redirects to /login"
+          }
+        }
+      }
+    },
+    "/v1/refresh": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Refresh access token",
+        "description": "Validates the `refresh_token` cookie and issues a fresh pair of access and refresh tokens in HTTP-only cookies.",
+        "responses": {
+          "200": {
+            "description": "Token refreshed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or expired refresh token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/signup/send-otp": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Send OTP for customer signup",
+        "description": "Checks email and contact number uniqueness, generates a 6-digit OTP, and emails it to the user.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckDetailsRequest"
+              },
+              "example": {
+                "email": "customer@example.com",
+                "contact_number": "09123456789"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OTP sent successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Email or phone already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/signup/verify-otp": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Verify signup OTP",
+        "description": "Validates the 6-digit OTP sent to the user's email address.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupVerifyOTPRequest"
+              },
+              "example": {
+                "email": "customer@example.com",
+                "otp": "123456"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OTP verified successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid OTP",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "OTP expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/signup/check-card": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Verify physical card availability",
+        "description": "Checks whether a 16-digit card number exists in the inventory and is unassigned.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["card_number"],
+                "properties": {
+                  "card_number": {
+                    "type": "string",
+                    "example": "1000200030004000"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Card is valid and available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Card not found or already assigned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/signup": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Register a new customer account",
+        "description": "Creates a new customer record and links the 16-digit card to the account.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupRequest"
+              },
+              "example": {
+                "first_name": "Juan",
+                "last_name": "Dela Cruz",
+                "card_number": "1000200030004000",
+                "password": "Password123!",
+                "email": "juan@example.com",
+                "contact_number": "09123456789"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Account created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/signup": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Register a new Super Admin",
+        "description": "Registers an administrative user with super_admin privileges.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSignupRequest"
+              },
+              "example": {
+                "name": "System Administrator",
+                "username": "sysadmin",
+                "email": "sysadmin@tap.ph",
+                "password": "SuperSecretPassword123!"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Super admin created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/merchant/signup": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Submit merchant onboarding application",
+        "description": "Registers a new merchant applicant. Application will be placed in pending review status for admin verification.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MerchantSignupRequest"
+              },
+              "example": {
+                "businessName": "Acme Coffee Shop",
+                "businessType": "Food & Beverage",
+                "businessAddress": "123 Ayala Ave, Makati City",
+                "ownerName": "Maria Santos",
+                "businessPhone": "09187654321",
+                "businessEmail": "maria@acmecoffee.ph",
+                "password": "CoffeePassword123!"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Application submitted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/forgot-password/send-otp": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Send password reset OTP",
+        "description": "Sends a verification OTP to the specified email if an account exists.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email"],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "user@example.com"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OTP sent notice (generic to prevent email enumeration)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/forgot-password/verify-otp": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Verify password reset OTP",
+        "description": "Validates the reset OTP before allowing password update.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "otp"],
+                "properties": {
+                  "email": { "type": "string", "format": "email", "example": "user@example.com" },
+                  "otp": { "type": "string", "example": "123456" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OTP verified successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/forgot-password/reset": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Reset password with OTP",
+        "description": "Applies a new password after verifying email and OTP.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotPasswordRequest"
+              },
+              "example": {
+                "email": "user@example.com",
+                "otp": "123456",
+                "new_password": "NewSecretPassword123!"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password reset successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/user/{username}": {
+      "get": {
+        "tags": ["Customer API"],
+        "summary": "Get customer dashboard summary",
+        "description": "Returns customer details, balance, linked card, and summary metrics. Requires `customer` role or `super_admin`.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Username of the customer"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Customer dashboard details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardUser"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/v1/user/{username}/transactions": {
+      "get": {
+        "tags": ["Customer API"],
+        "summary": "Get customer transaction history",
+        "description": "Fetches chronological list of transactions (payments, top-ups, card fees) for the customer.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transactions history list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionsListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/u/{username}/profile/edit": {
+      "patch": {
+        "tags": ["Customer API"],
+        "summary": "Update customer profile",
+        "description": "Updates first name, last name, phone, email, or username.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ProfileUpdateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Profile updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/APIResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/user/{username}/profile/verify-password": {
+      "post": {
+        "tags": ["Customer API"],
+        "summary": "Verify current password",
+        "description": "Verifies that the provided password matches the currently authenticated user.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["current_password"],
+                "properties": {
+                  "current_password": { "type": "string", "example": "CurrentPassword123!" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Password is correct" },
+          "401": { "description": "Incorrect password" }
+        }
+      }
+    },
+    "/u/{username}/profile/password": {
+      "put": {
+        "tags": ["Customer API"],
+        "summary": "Change customer password",
+        "description": "Updates password after verifying the old password.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["current_password", "new_password", "confirm_password"],
+                "properties": {
+                  "current_password": { "type": "string" },
+                  "new_password": { "type": "string" },
+                  "confirm_password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Password updated successfully" }
+        }
+      }
+    },
+    "/v1/user/{username}/card/status": {
+      "post": {
+        "tags": ["Customer API"],
+        "summary": "Update card status",
+        "description": "Updates the card state (`active`, `inactive`, `lost`, `blocked`).",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": ["active", "inactive", "lost", "blocked"],
+                    "example": "inactive"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Card status updated" }
+        }
+      }
+    },
+    "/v1/user/{username}/card/replace": {
+      "post": {
+        "tags": ["Customer API"],
+        "summary": "Request replacement card",
+        "description": "Locks the current card and deducts the replacement fee (₱150.00).",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Card replacement submitted" },
+          "400": { "description": "Insufficient balance" }
+        }
+      }
+    },
+    "/v1/user/{username}/topup/checkout": {
+      "post": {
+        "tags": ["Customer API"],
+        "summary": "Create Xendit Top-up checkout invoice",
+        "description": "Generates a Xendit checkout payment session to load funds into the customer wallet.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopUpRequest"
+              },
+              "example": {
+                "amount": 500,
+                "payment_method": "GCASH"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Checkout session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "message": { "type": "string" },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "url": { "type": "string", "example": "https://checkout.xendit.co/web/60f78..." }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/merchant/{username}/account": {
+      "get": {
+        "tags": ["Merchant API"],
+        "summary": "Get merchant profile & settlement details",
+        "description": "Retrieves the merchant profile, bank details, and KYC status.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Merchant summary data",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/APIResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/merchant/{username}/dashboard": {
+      "get": {
+        "tags": ["Merchant API"],
+        "summary": "Get merchant dashboard metrics",
+        "description": "Returns merchant income, terminal counts, and recent transactions.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Merchant dashboard summary",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/APIResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/merchant/{username}/update-bank": {
+      "post": {
+        "tags": ["Merchant API"],
+        "summary": "Update settlement bank details",
+        "description": "Configures bank account details for merchant withdrawals.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BusinessBankDetails"
+              },
+              "example": {
+                "settlementName": "Acme Coffee Inc.",
+                "settlementAccount": "001234567890",
+                "settlementBank": "BDO"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Bank details updated" }
+        }
+      }
+    },
+    "/v1/merchant/{username}/upload-document": {
+      "post": {
+        "tags": ["Merchant API"],
+        "summary": "Upload KYC verification document",
+        "description": "Uploads PDF or picture document up to 5MB for KYC verification.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "document_type": { "type": "string", "example": "business_permit" },
+                  "document": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Document uploaded successfully" }
+        }
+      }
+    },
+    "/v1/merchant/{username}/incomes": {
+      "get": {
+        "tags": ["Merchant API"],
+        "summary": "Get merchant income metrics",
+        "description": "Fetches income stats and transaction earnings breakdown.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Income statistics retrieved" }
+        }
+      }
+    },
+    "/v1/merchant/{username}/withdraw": {
+      "post": {
+        "tags": ["Merchant API"],
+        "summary": "Request payout / withdrawal",
+        "description": "Initiates a withdrawal to the merchant's configured bank account (min ₱500.00).",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["amount"],
+                "properties": {
+                  "amount": { "type": "number", "example": 1000 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Withdrawal processing initiated" },
+          "400": { "description": "Insufficient balance or invalid amount" }
+        }
+      }
+    },
+    "/v1/merchant/{username}/terminals/request": {
+      "post": {
+        "tags": ["Merchant API"],
+        "summary": "Request POS hardware terminal",
+        "description": "Submits a request to the admin for a payment terminal.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "terminal_sn": { "type": "string", "example": "POS-5566" },
+                  "notes": { "type": "string", "example": "Branch 2 Counter" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Terminal request submitted" }
+        }
+      }
+    },
+    "/v1/merchant/{username}/transactions": {
+      "get": {
+        "tags": ["Merchant API"],
+        "summary": "Get merchant transactions",
+        "description": "Lists transactions processed through this merchant's terminals.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "type", "in": "query", "schema": { "type": "string" } },
+          { "name": "sort", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Transactions list" }
+        }
+      }
+    },
+    "/v1/admin/{username}/dashboard-data": {
+      "get": {
+        "tags": ["Admin API"],
+        "summary": "Get Super Admin dashboard data",
+        "description": "Returns system-wide metrics: total volume, merchant counts, terminals, and recent transactions.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Dashboard data retrieved" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/v1/admin/{username}/merchants-data": {
+      "get": {
+        "tags": ["Admin API"],
+        "summary": "List merchants",
+        "description": "Paginated merchant listing with filters for search, category, and status.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10 } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string" } },
+          { "name": "category", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Merchants list retrieved" }
+        }
+      }
+    },
+    "/v1/admin/{username}/merchants/add": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Manually onboard merchants (Batch)",
+        "description": "Allows super admins to manually onboard one or multiple merchants with pre-configured terminals and settlement banks.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/AddMerchantRequest" }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Merchants onboarded" }
+        }
+      }
+    },
+    "/v1/admin/{username}/merchants/{id}/data": {
+      "get": {
+        "tags": ["Admin API"],
+        "summary": "Get merchant details",
+        "description": "Returns full details, documents, and credentials for a single merchant ID.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Merchant details retrieved" }
+        }
+      }
+    },
+    "/v1/admin/{username}/merchants/{id}/approve": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Approve merchant application",
+        "description": "Approves pending merchant application and sets commission rate and assigned terminal.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "commissionRate": { "type": "string", "example": "0.02" },
+                  "terminalSn": { "type": "string", "example": "POS-001" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Merchant approved" }
+        }
+      }
+    },
+    "/v1/admin/{username}/merchants/{id}/approve-documents": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Approve merchant KYC documents",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Documents approved" }
+        }
+      }
+    },
+    "/v1/admin/{username}/merchants/{id}/reject": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Reject merchant application",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["reason"],
+                "properties": {
+                  "reason": { "type": "string", "example": "Incomplete registration documentation" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Merchant rejected" }
+        }
+      }
+    },
+    "/v1/admin/{username}/merchants/{id}/suspend": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Suspend merchant",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["reason"],
+                "properties": {
+                  "reason": { "type": "string", "example": "Suspicious chargeback volume" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Merchant suspended" }
+        }
+      }
+    },
+    "/v1/admin/{username}/merchants/{id}/delete": {
+      "delete": {
+        "tags": ["Admin API"],
+        "summary": "Delete merchant account",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Merchant deleted" }
+        }
+      }
+    },
+    "/v1/admin/{username}/terminals-data": {
+      "get": {
+        "tags": ["Admin API"],
+        "summary": "Get terminal registry data",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10 } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Terminals retrieved" }
+        }
+      }
+    },
+    "/v1/admin/{username}/terminals/unassigned": {
+      "get": {
+        "tags": ["Admin API"],
+        "summary": "Get unassigned terminals",
+        "description": "Lists all terminals currently in inventory that have not been assigned to any merchant.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Unassigned terminals list" }
+        }
+      }
+    },
+    "/v1/admin/{username}/terminals/add": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Add new terminal device",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddTerminalRequest"
+              },
+              "example": {
+                "terminalSn": "POS-9988",
+                "deviceName": "Sunmi V2 Pro"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Terminal registered" }
+        }
+      }
+    },
+    "/v1/admin/{username}/terminal-requests-data": {
+      "get": {
+        "tags": ["Admin API"],
+        "summary": "List merchant terminal requests",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Terminal requests retrieved" }
+        }
+      }
+    },
+    "/v1/admin/{username}/terminal-requests/{id}/approve": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Approve terminal request",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["assign_terminal_sn"],
+                "properties": {
+                  "assign_terminal_sn": { "type": "string", "example": "POS-9988" },
+                  "notes": { "type": "string", "example": "Approved for merchant" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Terminal request approved" }
+        }
+      }
+    },
+    "/v1/admin/{username}/terminal-requests/{id}/reject": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Reject terminal request",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["reason"],
+                "properties": {
+                  "reason": { "type": "string", "example": "Out of terminal inventory" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Terminal request rejected" }
+        }
+      }
+    },
+    "/v1/admin/{username}/card-inventory-data": {
+      "get": {
+        "tags": ["Admin API"],
+        "summary": "Get card inventory",
+        "description": "Retrieves cards in inventory with status, holder, and balances.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Card inventory retrieved" }
+        }
+      }
+    },
+    "/v1/admin/{username}/addcardauth": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Add card to inventory",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CardData"
+              },
+              "example": {
+                "card_number": "1000200030004000",
+                "card_holder": "Unassigned",
+                "card_type": "standard",
+                "status": "active"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Card added successfully" }
+        }
+      }
+    },
+    "/v1/admin/{username}/cards/{id}/block": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Block card by ID",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Card blocked" }
+        }
+      }
+    },
+    "/v1/admin/{username}/deactivatecardauth": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Deactivate card",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CardData" },
+              "example": {
+                "card_number": "1000200030004000",
+                "card_holder": "Juan Dela Cruz",
+                "card_type": "standard"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Card deactivated" }
+        }
+      }
+    },
+    "/v1/admin/{username}/deletecardauth": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Delete card",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["card_number"],
+                "properties": {
+                  "card_number": { "type": "string", "example": "1000200030004000" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Card deleted" }
+        }
+      }
+    },
+    "/v1/admin/{username}/transactions": {
+      "get": {
+        "tags": ["Admin API"],
+        "summary": "Get all system transactions",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "System transactions list" }
+        }
+      }
+    },
+    "/v1/admin/{username}/terminal-sim/transaction": {
+      "post": {
+        "tags": ["Admin API"],
+        "summary": "Simulate POS Card Payment (Consume Card Balance)",
+        "description": "Simulates a Point-of-Sale terminal transaction. Verifies card is active, checks for sufficient balance, deducts the payment amount from card balance, awards loyalty points, records a payment transaction, and credits the merchant's gross/net earnings.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Admin username" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["card_number", "merchant_id", "amount", "type"],
+                "properties": {
+                  "card_number": { "type": "string", "example": "1000200030004000", "description": "16-digit card number" },
+                  "merchant_id": { "type": "string", "example": "mrc_998811", "description": "Merchant ID receiving the payment" },
+                  "amount": { "type": "number", "example": 150.00, "description": "Amount to charge and deduct from card" },
+                  "type": { "type": "string", "enum": ["Payment", "Refund"], "example": "Payment", "description": "Transaction type: 'Payment' to charge card, 'Refund' to return balance" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Payment processed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "message": { "type": "string", "example": "Transaction successful" },
+                    "service_fee": { "type": "string", "example": "3.00" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Insufficient balance or invalid card",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/APIResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/webhooks/xendit/invoice": {
+      "post": {
+        "tags": ["Webhooks"],
+        "summary": "Xendit invoice paid webhook",
+        "description": "Callback triggered by Xendit when a customer top-up invoice is settled.",
+        "parameters": [
+          {
+            "name": "x-callback-token",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Secret token configured in Xendit dashboard (`XENDIT_WEBHOOK_KEY`)"
+          }
+        ],
+        "responses": {
+          "200": { "description": "Webhook processed" },
+          "401": { "description": "Invalid callback token" }
+        }
+      }
+    },
+    "/api/webhooks/xendit/disbursement": {
+      "post": {
+        "tags": ["Webhooks"],
+        "summary": "Xendit payout disbursement webhook",
+        "description": "Callback triggered by Xendit when a merchant withdrawal is COMPLETED or FAILED.",
+        "parameters": [
+          {
+            "name": "x-callback-token",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Disbursement processed" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Enter the JWT access token received from `POST /v1/loginauth`."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Unauthorized - Missing or invalid JWT access token",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/APIResponse" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Forbidden - Insufficient role permissions",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/APIResponse" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "APIResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "message": { "type": "string", "example": "Operation completed successfully" },
+          "field": { "type": "string" },
+          "data": { "type": "object" }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["identifier", "password"],
+        "properties": {
+          "identifier": {
+            "type": "string",
+            "description": "Username, email address, or phone number",
+            "example": "admin@tap.ph"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "example": "Password123!"
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "message": { "type": "string", "example": "Login successful" },
+          "id": { "type": "string", "example": "usr_998822" },
+          "username": { "type": "string", "example": "admin" },
+          "redirect_url": { "type": "string", "example": "/admin/admin" },
+          "access_token": { "type": "string", "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." },
+          "token": { "type": "string", "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." }
+        }
+      },
+      "SignupRequest": {
+        "type": "object",
+        "required": ["first_name", "last_name", "card_number", "password", "email", "contact_number"],
+        "properties": {
+          "first_name": { "type": "string", "example": "Juan" },
+          "last_name": { "type": "string", "example": "Dela Cruz" },
+          "card_number": { "type": "string", "example": "1000200030004000" },
+          "password": { "type": "string", "minLength": 8, "example": "Password123!" },
+          "email": { "type": "string", "format": "email", "example": "juan@example.com" },
+          "contact_number": { "type": "string", "example": "09123456789" }
+        }
+      },
+      "CheckDetailsRequest": {
+        "type": "object",
+        "properties": {
+          "email": { "type": "string", "format": "email", "example": "juan@example.com" },
+          "contact_number": { "type": "string", "example": "09123456789" }
+        }
+      },
+      "SignupVerifyOTPRequest": {
+        "type": "object",
+        "required": ["email", "otp"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "example": "juan@example.com" },
+          "otp": { "type": "string", "example": "123456" }
+        }
+      },
+      "AdminSignupRequest": {
+        "type": "object",
+        "required": ["name", "username", "email", "password"],
+        "properties": {
+          "name": { "type": "string", "example": "System Admin" },
+          "username": { "type": "string", "example": "sysadmin" },
+          "email": { "type": "string", "format": "email", "example": "sysadmin@tap.ph" },
+          "password": { "type": "string", "minLength": 8, "example": "SuperSecret123!" }
+        }
+      },
+      "MerchantSignupRequest": {
+        "type": "object",
+        "required": ["businessName", "businessType", "businessAddress", "ownerName", "businessPhone", "businessEmail", "password"],
+        "properties": {
+          "businessName": { "type": "string", "example": "Acme Coffee" },
+          "businessType": { "type": "string", "example": "Food & Beverage" },
+          "businessAddress": { "type": "string", "example": "123 Ayala Ave, Makati City" },
+          "ownerName": { "type": "string", "example": "Maria Santos" },
+          "businessPhone": { "type": "string", "example": "09187654321" },
+          "businessEmail": { "type": "string", "format": "email", "example": "maria@acmecoffee.ph" },
+          "password": { "type": "string", "minLength": 6, "example": "CoffeePass123!" },
+          "businessDocument": { "type": "string" },
+          "birDocument": { "type": "string" },
+          "otherDocument": { "type": "string" }
+        }
+      },
+      "ForgotPasswordRequest": {
+        "type": "object",
+        "required": ["email", "otp", "new_password"],
+        "properties": {
+          "email": { "type": "string", "format": "email" },
+          "otp": { "type": "string" },
+          "new_password": { "type": "string" }
+        }
+      },
+      "DashboardUser": {
+        "type": "object",
+        "properties": {
+          "ID": { "type": "string" },
+          "Username": { "type": "string", "example": "johndoe" },
+          "FirstName": { "type": "string", "example": "John" },
+          "LastName": { "type": "string", "example": "Doe" },
+          "Email": { "type": "string", "example": "john@example.com" },
+          "ContactNumber": { "type": "string", "example": "09123456789" },
+          "Balance": { "type": "number", "example": 1500.50 },
+          "CardNumber": { "type": "string", "example": "1000200030004000" },
+          "CardStatus": { "type": "string", "example": "active" }
+        }
+      },
+      "TransactionsListResponse": {
+        "type": "object",
+        "properties": {
+          "transactions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "transaction_id": { "type": "string", "example": "tx_12345" },
+                "amount": { "type": "number", "example": 250.00 },
+                "type": { "type": "string", "example": "payment" },
+                "status": { "type": "string", "example": "success" },
+                "created_at": { "type": "string", "format": "date-time" }
+              }
+            }
+          }
+        }
+      },
+      "ProfileUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "first_name": { "type": "string", "example": "Juan" },
+          "last_name": { "type": "string", "example": "Dela Cruz" },
+          "contact_number": { "type": "string", "example": "09123456789" },
+          "email": { "type": "string", "format": "email", "example": "juan@example.com" },
+          "username": { "type": "string", "example": "juandelacruz" }
+        }
+      },
+      "TopUpRequest": {
+        "type": "object",
+        "required": ["amount"],
+        "properties": {
+          "amount": { "type": "number", "example": 500, "description": "Top-up amount (PHP)" },
+          "payment_method": {
+            "type": "string",
+            "enum": [
+              "GCASH",
+              "PAYMAYA",
+              "GRABPAY",
+              "SHOPEEPAY",
+              "QRPH",
+              "CREDIT_CARD",
+              "BPI_DIRECT_DEBIT",
+              "UBP_DIRECT_DEBIT",
+              "7ELEVEN"
+            ],
+            "example": "GCASH",
+            "description": "Optional specific payment method. If omitted or empty, all supported payment channels will be available on the checkout invoice."
+          }
+        }
+      },
+      "BusinessBankDetails": {
+        "type": "object",
+        "required": ["settlementName", "settlementAccount", "settlementBank"],
+        "properties": {
+          "settlementName": { "type": "string", "example": "Acme Coffee Inc." },
+          "settlementAccount": { "type": "string", "example": "001234567890" },
+          "settlementBank": { "type": "string", "example": "BDO" }
+        }
+      },
+      "AddMerchantRequest": {
+        "type": "object",
+        "required": ["businessName", "businessType", "businessAddress", "ownerName", "businessEmail", "businessPhone", "settlementName", "settlementAccount", "settlementBank", "terminalSn"],
+        "properties": {
+          "businessName": { "type": "string", "example": "Bistro Verde" },
+          "businessType": { "type": "string", "example": "Restaurant" },
+          "registrationNum": { "type": "string", "example": "SEC-123456" },
+          "businessAddress": { "type": "string", "example": "Bonifacio Global City, Taguig" },
+          "ownerName": { "type": "string", "example": "Pedro Cruz" },
+          "businessEmail": { "type": "string", "format": "email", "example": "pedro@bistroverde.ph" },
+          "businessPhone": { "type": "string", "example": "09171234567" },
+          "commissionRate": { "type": "string", "example": "0.025" },
+          "settlementName": { "type": "string", "example": "Bistro Verde Corp" },
+          "settlementAccount": { "type": "string", "example": "1234567890" },
+          "settlementBank": { "type": "string", "example": "BPI" },
+          "terminalSn": { "type": "string", "example": "POS-1002" },
+          "deviceName": { "type": "string", "example": "Pax A920" }
+        }
+      },
+      "AddTerminalRequest": {
+        "type": "object",
+        "required": ["terminalSn", "deviceName"],
+        "properties": {
+          "terminalSn": { "type": "string", "example": "POS-7788" },
+          "deviceName": { "type": "string", "example": "Sunmi V2 Pro" }
+        }
+      },
+      "CardData": {
+        "type": "object",
+        "required": ["card_number"],
+        "properties": {
+          "card_number": { "type": "string", "example": "1000200030004000" },
+          "card_holder": { "type": "string", "example": "Unassigned" },
+          "card_type": { "type": "string", "example": "standard" },
+          "status": { "type": "string", "example": "active" }
+        }
+      }
+    }
+  }
+}
