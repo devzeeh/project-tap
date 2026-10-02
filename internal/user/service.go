@@ -32,6 +32,12 @@ func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
 }
 
+// defaultPaymentMethods defines the fallback payment channels for Xendit checkout sessions.
+var defaultPaymentMethods = []string{
+	"CREDIT_CARD", "GCASH", "PAYMAYA",
+	"GRABPAY", "SHOPEEPAY", "7ELEVEN",
+}
+
 // IsUserAuthorized verifies that the claims user ID matches the target username.
 func (s *Service) IsUserAuthorized(ctx context.Context, claimsUserID, targetUsername string, isSuperAdmin bool) bool {
 	if isSuperAdmin {
@@ -297,8 +303,7 @@ func (s *Service) CreateTopUpSession(ctx context.Context, username string, req T
 	if req.PaymentMethod != "" {
 		paymentMethods = []string{req.PaymentMethod}
 	} else {
-		paymentMethods = []string{"CREDIT_CARD", "UBP_DIRECT_DEBIT", "BPI_DIRECT_DEBIT", "QRPH", "GCASH",
-			"PAYMAYA", "GRABPAY", "SHOPEEPAY", "7ELEVEN"}
+		paymentMethods = append([]string(nil), defaultPaymentMethods...)
 	}
 
 	xenditClient := xendit.NewClient(os.Getenv("XENDIT_SECRET_KEY"))
