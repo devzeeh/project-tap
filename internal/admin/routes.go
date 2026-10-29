@@ -11,6 +11,7 @@ func RegisterRoutes(mux *http.ServeMux, h *Handler, requireAdmin func(http.Handl
 	mux.Handle("GET /admin/{username}/terminals", requireAdmin(http.HandlerFunc(h.TerminalRegistryView)))
 	mux.Handle("GET /v1/admin/{username}/terminals-data", requireAdmin(http.HandlerFunc(h.TerminalRegistryDataHandler)))
 	mux.Handle("GET /v1/admin/{username}/terminals/unassigned", requireAdmin(http.HandlerFunc(h.GetUnassignedTerminalsHandler)))
+	mux.Handle("GET /v1/admin/{username}/terminals/{sn}/logs", requireAdmin(http.HandlerFunc(h.GetTerminalLogsHandler)))
 	mux.Handle("POST /v1/admin/{username}/terminals/add", requireAdmin(http.HandlerFunc(h.AddTerminalHandler)))
 	mux.Handle("GET /admin/{username}/terminal-requests", requireAdmin(http.HandlerFunc(h.TerminalRequestsView)))
 	mux.Handle("GET /v1/admin/{username}/terminal-requests-data", requireAdmin(http.HandlerFunc(h.TerminalRequestsDataHandler)))

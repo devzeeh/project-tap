@@ -55,3 +55,27 @@ func (r *Repository) GenerateCardNumber() string {
 	}
 	return fmt.Sprintf("%s%s%s%s", yy, ss, digits, dd)
 }
+
+// GetUsernameByCardNumber finds the username associated with a card number.
+func (r *Repository) GetUsernameByCardNumber(cardNumber string) string {
+	var username string
+	_ = r.store.QueryRow(`
+		SELECT u.username 
+		FROM users u 
+		JOIN cards c ON c.user_id = u.user_id 
+		WHERE c.card_number = ? 
+		LIMIT 1`, cardNumber).Scan(&username)
+	return username
+}
+
+// GetMerchantUsernameByID finds the merchant user's username associated with a merchant ID.
+func (r *Repository) GetMerchantUsernameByID(merchantID string) string {
+	var username string
+	_ = r.store.QueryRow(`
+		SELECT u.username 
+		FROM users u 
+		JOIN merchants m ON m.user_id = u.user_id 
+		WHERE m.merchant_id = ? 
+		LIMIT 1`, merchantID).Scan(&username)
+	return username
+}

@@ -28,6 +28,7 @@ type Merchant struct {
 // AdminDashboardData struct represents the data to be displayed on the admin dashboard
 type AdminDashboardData struct {
 	GrossRevenue       decimal.Decimal `json:"grossRevenue"`
+	GrossVolume        decimal.Decimal `json:"grossVolume,omitempty"`
 	NetRevenue         decimal.Decimal `json:"netRevenue"`
 	TotalUsers         int             `json:"totalUsers"`
 	TotalCards         int             `json:"totalCards"`

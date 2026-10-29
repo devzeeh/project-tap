@@ -59,6 +59,20 @@ func (r *Repository) IsPhoneExist(phone string) (bool, error) {
 	return true, nil
 }
 
+// IsUsernameExist returns true if the username is already registered.
+func (r *Repository) IsUsernameExist(username string) (bool, error) {
+	var existing string
+	err := r.store.QueryRow("SELECT username FROM users WHERE username = ?", username).Scan(&existing)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		log.Printf("username check error: %v", err)
+		return false, err
+	}
+	return true, nil
+}
+
 // GetInitialBalance returns the current balance on a card (used during signup
 // to carry over any pre-loaded balance).
 func (r *Repository) GetInitialBalance(cardNumber string) (float64, error) {

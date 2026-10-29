@@ -2,6 +2,7 @@ package merchant
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/shopspring/decimal"
 	xendit "github.com/xendit/xendit-go/v7"
@@ -39,9 +40,12 @@ func (g *XenditPayoutGateway) CreatePayout(ctx context.Context, txnID, channelCo
 	req := payout.NewCreatePayoutRequest(txnID, channelCode, *channelProps, float32(amount), "PHP")
 	req.SetDescription(description)
 
-	_, _, err := g.client.CreatePayout(ctx).
+	_, _, sdkErr := g.client.CreatePayout(ctx).
 		IdempotencyKey(txnID).
 		CreatePayoutRequest(*req).
 		Execute()
-	return err
+	if sdkErr != nil {
+		return fmt.Errorf("xendit payout: %v", sdkErr)
+	}
+	return nil
 }

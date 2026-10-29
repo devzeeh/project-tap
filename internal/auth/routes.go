@@ -23,6 +23,7 @@ func RegisterRoutes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /v1/signup/verify-otp", h.SignupVerifyOTP)
 	mux.HandleFunc("POST /v1/signup/check-card", h.CheckCardHandler)
 	mux.HandleFunc("POST /v1/signup", h.SignupHandler)
+	mux.HandleFunc("POST /v1/signupauth", h.SignupHandler)
 
 	// Admin signup
 	mux.HandleFunc("POST /v1/admin/signup", h.AdminSignupHandler)
@@ -34,4 +35,5 @@ func RegisterRoutes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /v1/forgot-password/send-otp", h.ForgotPasswordSendOTP)
 	mux.HandleFunc("POST /v1/forgot-password/verify-otp", h.ForgotPasswordVerifyOTP)
 	mux.HandleFunc("POST /v1/forgot-password/reset", h.ResetPassword)
+	mux.HandleFunc("POST /v1/reset-password", h.ResetPassword)
 }

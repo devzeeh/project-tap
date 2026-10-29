@@ -11,6 +11,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+var ErrWithdrawalNotFound = errors.New("withdrawal transaction not found")
+
 // Repository handles simple, reusable DB queries for the merchant package.
 type Repository struct {
 	store database.Store
@@ -122,10 +124,10 @@ func (r *Repository) GetDocumentPath(ctx context.Context, username, column strin
 	return path, nil
 }
 
-// UpdateDocumentPath stores the new document path and resets document_status to Pending.
+// UpdateDocumentPath stores the new document path and resets document_status to pending.
 func (r *Repository) UpdateDocumentPath(ctx context.Context, username, column, dbPath string) error {
 	query := fmt.Sprintf(`
-		UPDATE merchants SET %s = ?, document_status = 'Pending'
+		UPDATE merchants SET %s = ?, document_status = 'pending', message = 'New documents uploaded. Awaiting admin review.'
 		WHERE user_id = (SELECT user_id FROM users WHERE username = ?)`, column)
 
 	if _, err := r.store.ExecContext(ctx, query, dbPath, username); err != nil {
@@ -207,13 +209,23 @@ func (r *Repository) GetRevenueSummary(ctx context.Context, merchantID string) (
 	var s RevenueSummary
 	err := r.store.QueryRowContext(ctx, `
 		SELECT 
-			COALESCE(SUM(amount), 0), 
-			COALESCE(SUM(service_fee), 0), 
-			COALESCE(SUM(net_merchant_payout), 0)
+			COALESCE(SUM(CASE WHEN transaction_type = 'payment' AND status = 'completed' THEN amount ELSE 0 END), 0), 
+			COALESCE(SUM(
+				CASE 
+					WHEN transaction_type = 'payment' AND status = 'completed' THEN service_fee 
+					WHEN transaction_type IN ('refund', 'reversal') AND status IN ('completed', 'refunded') THEN -service_fee 
+					ELSE 0 
+				END
+			), 0), 
+			COALESCE(SUM(
+				CASE 
+					WHEN transaction_type = 'payment' AND status = 'completed' THEN net_merchant_payout 
+					WHEN transaction_type IN ('refund', 'reversal') AND status IN ('completed', 'refunded') THEN -net_merchant_payout 
+					ELSE 0 
+				END
+			), 0)
 		FROM transactions 
-		WHERE merchant_id = ? 
-		AND transaction_type = 'payment' 
-		AND status = 'completed'`, merchantID).Scan(&s.TotalRevenue, &s.TotalServiceFee, &s.TotalIncome)
+		WHERE merchant_id = ?`, merchantID).Scan(&s.TotalRevenue, &s.TotalServiceFee, &s.TotalIncome)
 	if err != nil {
 		return nil, fmt.Errorf("get revenue summary (merchant %q): %w", merchantID, err)
 	}
@@ -228,7 +240,7 @@ func (r *Repository) GetTotalRefunds(ctx context.Context, merchantID string) (de
 		FROM transactions
 		WHERE merchant_id = ?
 		AND transaction_type = 'refund'
-		AND status = 'completed'`, merchantID).Scan(&refunds)
+		AND status IN ('completed', 'refunded')`, merchantID).Scan(&refunds)
 	if err != nil {
 		return decimal.Decimal{}, fmt.Errorf("get total refunds (merchant %q): %w", merchantID, err)
 	}
@@ -312,14 +324,35 @@ func (r *Repository) GetIncomeStats(ctx context.Context, merchantID string) (*In
 	err := r.store.QueryRowContext(ctx, `
 		SELECT 
 			COALESCE(SUM(CASE WHEN transaction_type = 'payment' AND status = 'completed' THEN amount ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN transaction_type = 'payment' AND status = 'completed' THEN service_fee ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN transaction_type = 'payment' AND status = 'completed' THEN net_merchant_payout ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN transaction_type = 'refund' AND status = 'completed' THEN amount ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN transaction_type = 'payment' AND status = 'completed'
-				AND MONTH(created_at) = MONTH(NOW()) 
-				AND YEAR(created_at) = YEAR(NOW()) 
-				THEN net_merchant_payout ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN transaction_type = 'refund' AND status = 'completed'
+			COALESCE(SUM(
+				CASE 
+					WHEN transaction_type = 'payment' AND status = 'completed' THEN service_fee 
+					WHEN transaction_type IN ('refund', 'reversal') AND status IN ('completed', 'refunded') THEN -service_fee 
+					ELSE 0 
+				END
+			), 0),
+			COALESCE(SUM(
+				CASE 
+					WHEN transaction_type = 'payment' AND status = 'completed' THEN net_merchant_payout 
+					WHEN transaction_type IN ('refund', 'reversal') AND status IN ('completed', 'refunded') THEN -net_merchant_payout 
+					ELSE 0 
+				END
+			), 0),
+			COALESCE(SUM(CASE WHEN transaction_type = 'refund' AND status IN ('completed', 'refunded') THEN amount ELSE 0 END), 0),
+			COALESCE(SUM(
+				CASE 
+					WHEN transaction_type = 'payment' AND status = 'completed'
+						AND MONTH(created_at) = MONTH(NOW()) 
+						AND YEAR(created_at) = YEAR(NOW()) 
+						THEN net_merchant_payout 
+					WHEN transaction_type IN ('refund', 'reversal') AND status IN ('completed', 'refunded')
+						AND MONTH(created_at) = MONTH(NOW()) 
+						AND YEAR(created_at) = YEAR(NOW()) 
+						THEN -net_merchant_payout 
+					ELSE 0 
+				END
+			), 0),
+			COALESCE(SUM(CASE WHEN transaction_type = 'refund' AND status IN ('completed', 'refunded')
 				AND MONTH(created_at) = MONTH(NOW()) 
 				AND YEAR(created_at) = YEAR(NOW()) 
 				THEN amount ELSE 0 END), 0),
@@ -341,9 +374,9 @@ func (r *Repository) GetIncomeStats(ctx context.Context, merchantID string) (*In
 	return &IncomeStat{
 		GrossRevenue:     totalCollected,
 		PlatformFee:      unicardFee,
-		NetRevenue:       totalEarned.Sub(totalRefunded),
+		NetRevenue:       totalEarned,
 		TotalRefunds:     totalRefunded,
-		MonthlyNetIncome: earnedThisMonth.Sub(refundedThisMonth),
+		MonthlyNetIncome: earnedThisMonth,
 		MonthlyRefunds:   refundedThisMonth,
 		TotalWithdrawn:   totalWithdrawn,
 		// AvailableBalance is a derived field left for the service layer to
@@ -362,7 +395,7 @@ func (r *Repository) GetIncomeHistory(ctx context.Context, merchantID string, li
 			COALESCE(net_merchant_payout, 0), COALESCE(service_fee, 0),
 			processed_by, terminal_id
 		FROM transactions
-		WHERE merchant_id = ? AND status = 'completed'
+		WHERE merchant_id = ? AND status IN ('completed', 'refunded')
 		ORDER BY created_at DESC LIMIT ?`, merchantID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("get income history (merchant %q): %w", merchantID, err)
@@ -450,7 +483,26 @@ func (r *Repository) UpdateWithdrawalStatus(ctx context.Context, txnID, newStatu
 	if err != nil {
 		return fmt.Errorf("update withdrawal status (txn %q): %w", txnID, err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		var currentStatus string
+		qerr := r.store.QueryRowContext(ctx, `
+			SELECT status FROM transactions 
+			WHERE transaction_id = ? AND transaction_type = 'withdrawal'`, txnID).Scan(&currentStatus)
+		if qerr != nil {
+			if errors.Is(qerr, sql.ErrNoRows) {
+				return ErrWithdrawalNotFound
+			}
+			return fmt.Errorf("check withdrawal status (txn %q): %w", txnID, qerr)
+		}
+		if currentStatus == newStatus {
+			log.Printf("UpdateWithdrawalStatus: txn %s already in status %q (idempotent)", txnID, newStatus)
+			return nil
+		}
+		if currentStatus == "completed" || currentStatus == "failed" {
+			log.Printf("UpdateWithdrawalStatus: txn %s already reached terminal status %q (idempotent)", txnID, currentStatus)
+			return nil
+		}
 		return fmt.Errorf("update withdrawal status (txn %q): %w", txnID, sql.ErrNoRows)
 	}
 	return nil

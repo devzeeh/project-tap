@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"project-tap/internal/pkg/cache"
 	jsonwrite "project-tap/internal/pkg/handler"
 	structs "project-tap/internal/pkg/structs"
 
@@ -69,6 +70,7 @@ type RejectTerminalRequestPayload struct {
 // SimRequest models an emulated point-of-sale transaction for testing card payments.
 type SimRequest struct {
 	CardNumber string          `json:"card_number"`
+	TerminalID string          `json:"terminal_id"`
 	Type       string          `json:"type"`
 	Amount     decimal.Decimal `json:"amount"`
 	MerchantID string          `json:"merchant_id"`
@@ -79,16 +81,17 @@ type SimRequest struct {
 
 // Handler holds HTTP handlers for the admin package.
 type Handler struct {
-	svc *Service           // Service layer
-	tpl *template.Template // Template layer
+	svc   *Service           // Service layer
+	tpl   *template.Template // Template layer
+	cache *cache.RedisCache  // Cache layer
 }
 
 // NewHandler creates a new admin handler.
-// It takes a Service and a template.Template as arguments.
+// It takes a Service, template.Template, and cache.RedisCache as arguments.
 //
-// Example: handler := admin.NewHandler(service, template)
-func NewHandler(svc *Service, tpl *template.Template) *Handler {
-	return &Handler{svc: svc, tpl: tpl}
+// Example: handler := admin.NewHandler(service, template, cache)
+func NewHandler(svc *Service, tpl *template.Template, cache *cache.RedisCache) *Handler {
+	return &Handler{svc: svc, tpl: tpl, cache: cache}
 }
 
 // Dashboard
@@ -107,12 +110,25 @@ func (h *Handler) AdminDashboardView(w http.ResponseWriter, r *http.Request) {
 // Example: handler.AdminDashboardDataHandler(w, r)
 func (h *Handler) AdminDashboardDataHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("AdminDashboardDataHandler running...")
+
+	cacheKey := cache.AdminDashboardKey()
+	var cachedData structs.AdminDashboardData
+	if err := h.cache.GetJSON(cacheKey, &cachedData); err == nil {
+		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
+			Success: true, Message: "Admin dashboard data retrieved successfully", Data: cachedData,
+		})
+		return
+	}
+
 	data, err := h.svc.GetDashboardData()
 	if err != nil {
 		log.Printf("AdminDashboardDataHandler: %v", err)
 		writeErr(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
+
+	_ = h.cache.SetJSON(cacheKey, data, cache.AdminDashboardTTL())
+
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
 		Success: true, Message: "Admin dashboard data retrieved successfully", Data: data,
 	})
@@ -213,6 +229,7 @@ func (h *Handler) ApproveMerchantHandler(w http.ResponseWriter, r *http.Request)
 		}
 		return
 	}
+	h.cache.InvalidateAdmin()
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Merchant approved successfully"})
 }
 
@@ -241,6 +258,7 @@ func (h *Handler) RejectMerchantHandler(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusInternalServerError, "Failed to reject merchant")
 		return
 	}
+	h.cache.InvalidateAdmin()
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Merchant rejected successfully"})
 }
 
@@ -269,6 +287,7 @@ func (h *Handler) SuspendMerchantHandler(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusInternalServerError, "Failed to suspend merchant")
 		return
 	}
+	h.cache.InvalidateAdmin()
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Merchant suspended successfully"})
 }
 
@@ -278,12 +297,13 @@ func (h *Handler) SuspendMerchantHandler(w http.ResponseWriter, r *http.Request)
 // Example: handler.DeleteMerchantHandler(w, r)
 func (h *Handler) DeleteMerchantHandler(w http.ResponseWriter, r *http.Request) {
 	merchantID := r.PathValue("id")
+	adminUsername := r.PathValue("username")
 	if merchantID == "" {
 		writeErr(w, http.StatusBadRequest, "Merchant ID is required")
 		return
 	}
 
-	if err := h.svc.DeleteMerchant(merchantID); err != nil {
+	if err := h.svc.DeleteMerchant(merchantID, adminUsername); err != nil {
 		if err.Error() == "merchant not found" {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -291,6 +311,7 @@ func (h *Handler) DeleteMerchantHandler(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusInternalServerError, "Failed to delete merchant")
 		return
 	}
+	h.cache.InvalidateAdmin()
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Merchant deleted successfully"})
 }
 
@@ -305,9 +326,16 @@ func (h *Handler) ApproveMerchantDocumentsHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	if err := h.svc.ApproveMerchantDocuments(merchantID); err != nil {
+	merchantUsername, err := h.svc.ApproveMerchantDocuments(merchantID)
+	if err != nil {
+		log.Printf("ApproveMerchantDocuments: error approving documents for merchant %s: %v", merchantID, err)
 		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
+	}
+
+	h.cache.InvalidateAdmin()
+	if merchantUsername != "" {
+		h.cache.InvalidateMerchant(merchantUsername)
 	}
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Documents approved successfully"})
 }
@@ -333,6 +361,7 @@ func (h *Handler) AddMerchantHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.cache.InvalidateAdmin()
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
 		Success: true, Message: "Successfully onboarded " + strconv.Itoa(len(reqs)) + " merchant(s)",
 	})
@@ -390,6 +419,7 @@ func (h *Handler) AddTerminalHandler(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "Failed to register terminal (SN might already exist)")
 		return
 	}
+	h.cache.InvalidateAdmin()
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Terminal registered to inventory successfully"})
 }
 
@@ -405,6 +435,28 @@ func (h *Handler) GetUnassignedTerminalsHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Data: terminals})
+}
+
+// Handles terminal custody logs retrieval request
+// Example: handler.GetTerminalLogsHandler(w, r)
+func (h *Handler) GetTerminalLogsHandler(w http.ResponseWriter, r *http.Request) {
+	terminalSN := r.PathValue("sn")
+	if terminalSN == "" {
+		writeErr(w, http.StatusBadRequest, "Terminal SN or ID is required")
+		return
+	}
+
+	logs, err := h.svc.GetTerminalLogs(terminalSN)
+	if err != nil {
+		log.Printf("GetTerminalLogsHandler: %v", err)
+		writeErr(w, http.StatusInternalServerError, "Failed to retrieve terminal logs")
+		return
+	}
+
+	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
+		Success: true,
+		Data:    logs,
+	})
 }
 
 // Terminal requests
@@ -476,6 +528,7 @@ func (h *Handler) ApproveTerminalRequestHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	h.cache.InvalidateAdmin()
 	jsonwrite.WriteJSON(w, http.StatusOK, map[string]any{
 		"success": true, "message": "Terminal request approved successfully",
 		"data": map[string]any{"request_id": requestID, "terminal_sn": payload.AssignTerminalSN},
@@ -514,6 +567,7 @@ func (h *Handler) RejectTerminalRequestHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	h.cache.InvalidateAdmin()
 	jsonwrite.WriteJSON(w, http.StatusOK, map[string]any{
 		"success": true, "message": "Terminal request rejected successfully",
 		"data": map[string]any{"request_id": requestID, "reason": payload.Reason},
@@ -554,6 +608,7 @@ func (h *Handler) AddCardHandler(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.cache.InvalidateAdmin()
 	jsonwrite.WriteJSON(w, http.StatusCreated, jsonwrite.APIResponse{Success: true, Message: "Card added successfully!"})
 }
 
@@ -625,7 +680,10 @@ func (h *Handler) DeactivateCardHanlder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ok, err := h.svc.DeactivateCard(strings.TrimSpace(req.CardNumber), strings.TrimSpace(req.CardHolder), strings.TrimSpace(req.CardType))
+	cardNumber := strings.TrimSpace(req.CardNumber)
+	cardOwner := h.svc.GetUsernameByCardNumber(cardNumber)
+
+	ok, err := h.svc.DeactivateCard(cardNumber, strings.TrimSpace(req.CardHolder), strings.TrimSpace(req.CardType))
 	if err != nil {
 		log.Printf("DeactivateCardHanlder: %v", err)
 		writeErr(w, http.StatusInternalServerError, "Failed to deactivate card.")
@@ -634,6 +692,10 @@ func (h *Handler) DeactivateCardHanlder(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: false, Message: "Card not found, name/type mismatch, or card is already inactive."})
 		return
+	}
+	h.cache.InvalidateAdmin()
+	if cardOwner != "" {
+		h.cache.InvalidateUser(cardOwner)
 	}
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Card deactivated successfully!"})
 }
@@ -661,7 +723,10 @@ func (h *Handler) DeleteCardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	found, err := h.svc.DeleteCard(strings.TrimSpace(req.CardNumber))
+	cardNumber := strings.TrimSpace(req.CardNumber)
+	cardOwner := h.svc.GetUsernameByCardNumber(cardNumber)
+
+	found, err := h.svc.DeleteCard(cardNumber)
 	if err != nil {
 		log.Printf("DeleteCardHandler: %v", err)
 		writeErr(w, http.StatusInternalServerError, "Failed to delete card.")
@@ -670,6 +735,10 @@ func (h *Handler) DeleteCardHandler(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: false, Message: "Card not found."})
 		return
+	}
+	h.cache.InvalidateAdmin()
+	if cardOwner != "" {
+		h.cache.InvalidateUser(cardOwner)
 	}
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Card deleted successfully!"})
 }
@@ -722,7 +791,12 @@ func (h *Handler) AllXenditTransactionsJSONHandler(w http.ResponseWriter, r *htt
 // Example: handler.TerminalSimView(w, r)
 func (h *Handler) TerminalSimView(w http.ResponseWriter, r *http.Request) {
 	merchants := h.svc.GetSimMerchants()
-	if err := h.tpl.ExecuteTemplate(w, "terminal_sim.html", struct{ Merchants []SimMerchant }{Merchants: merchants}); err != nil {
+	merchantsJSON, _ := json.Marshal(merchants)
+	pageData := TerminalSimPageData{
+		Merchants:     merchants,
+		MerchantsJSON: template.JS(merchantsJSON),
+	}
+	if err := h.tpl.ExecuteTemplate(w, "terminal_sim.html", pageData); err != nil {
 		log.Printf("TerminalSimView: %v", err)
 	}
 }
@@ -737,25 +811,29 @@ func (h *Handler) TerminalSimTransactionHandler(w http.ResponseWriter, r *http.R
 		writeErr(w, http.StatusBadRequest, "Invalid request payload")
 		return
 	}
-	if req.CardNumber == "" || req.Amount.IsZero() || req.Type == "" {
-		writeErr(w, http.StatusBadRequest, "Missing required fields")
+	if req.CardNumber == "" || req.Amount.IsZero() || req.Type == "" || req.TerminalID == "" || req.MerchantID == "" {
+		writeErr(w, http.StatusBadRequest, "Please fill in all required fields including card number, merchant, terminal, and amount.")
 		return
 	}
 
 	serviceFee, err := h.svc.SimTransaction(req)
 	if err != nil {
-		switch err.Error() {
-		case "card not found", "card is not active", "card is not linked to any user", "insufficient balance":
-			writeErr(w, http.StatusBadRequest, err.Error())
-		default:
-			log.Printf("TerminalSimTransactionHandler: %v", err)
-			writeErr(w, http.StatusInternalServerError, err.Error())
-		}
+		log.Printf("TerminalSimTransactionHandler: %v", err)
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	h.cache.InvalidateAdmin()
+	if username := h.svc.GetUsernameByCardNumber(req.CardNumber); username != "" {
+		h.cache.InvalidateUser(username)
+	}
+	if merchantUser := h.svc.GetMerchantUsernameByID(req.MerchantID); merchantUser != "" {
+		h.cache.InvalidateMerchant(merchantUser)
+	}
+
+	feeVal, _ := serviceFee.Float64()
 	jsonwrite.WriteJSON(w, http.StatusOK, map[string]any{
-		"success": true, "message": "Transaction successful", "service_fee": serviceFee,
+		"success": true, "message": "Transaction successful", "service_fee": feeVal,
 	})
 }
 
