@@ -176,11 +176,16 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) error {
 	userIDStr := fmt.Sprintf("%d", userID)
 	fullName := strings.TrimSpace(req.FirstName) + " " + strings.TrimSpace(req.LastName)
 
+	username, err := GenerateCustomerUsername(s.repo, req.FirstName)
+	if err != nil {
+		return fmt.Errorf("generate username: %w", err)
+	}
+
 	err = s.repo.store.ExecTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO users (user_id, username, name, email, phone_number, password_hash, role, status, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			userIDStr, req.FirstName, fullName, req.Email, req.ContactNumber,
+			userIDStr, username, fullName, req.Email, req.ContactNumber,
 			hashedPassword, userRoleCustomer, userStatusActive, createdAt,
 		)
 		if err != nil {
@@ -445,7 +450,6 @@ func verifyOTP(email, otp string) error {
 		delete(otpStore, email)
 		return errors.New("OTP expired")
 	}
-	delete(otpStore, email)
 	return nil
 }
 

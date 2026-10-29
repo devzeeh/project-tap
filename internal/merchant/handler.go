@@ -1,7 +1,6 @@
 package merchant
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -9,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"project-tap/internal/pkg/cache"
 	jsonwrite "project-tap/internal/pkg/handler"
@@ -27,6 +25,7 @@ type Handler struct {
 func NewHandler(svc *Service, tpl *template.Template, cache *cache.RedisCache) *Handler {
 	return &Handler{svc: svc, tpl: tpl, cache: cache}
 }
+
 
 // Account page
 
@@ -82,7 +81,10 @@ func (h *Handler) UpdateMerhantBankDetails(w http.ResponseWriter, r *http.Reques
 	switch {
 	case err == nil:
 		h.cache.InvalidateMerchant(username)
-		writeErr(w, http.StatusOK, "Bank details updated")
+		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
+			Success: true,
+			Message: "Bank details updated",
+		})
 	case errors.Is(err, ErrInvalidBankDetails):
 		writeErr(w, http.StatusBadRequest, "All bank details field are required")
 	case errors.Is(err, ErrUnsupportedBank):
@@ -127,7 +129,11 @@ func (h *Handler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case err == nil:
-		writeErr(w, http.StatusOK, "File uploaded successfully")
+		h.cache.InvalidateMerchant(username)
+		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
+			Success: true,
+			Message: "File uploaded successfully",
+		})
 	case errors.Is(err, ErrFileTooLarge):
 		writeErr(w, http.StatusBadRequest, "File too large. Maximum size is 5MB.")
 	case errors.Is(err, ErrInvalidFileType):
@@ -145,8 +151,8 @@ func (h *Handler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 
 // MerchantDashboardView renders the merchant_dashboard.html template for the merchant.
 func (h *Handler) MerchantDashboardView(w http.ResponseWriter, r *http.Request) {
-	log.Println("MerchantAccountView running...")
-	h.renderTemplate(w, "merchant_account.html", MerchantPageData{Page: "dashboard", Username: r.PathValue("username")})
+	log.Println("MerchantDashboardView running...")
+	h.renderTemplate(w, "merchant_dashboard.html", MerchantPageData{Page: "dashboard", Username: r.PathValue("username")})
 }
 
 // MerchantDashboardData retrieves and returns the dashboard summary metrics as a JSON response.
@@ -176,7 +182,7 @@ func (h *Handler) MerchantDashboardData(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	_ = h.cache.SetJSON(cacheKey, summary, 3*time.Minute)
+	_ = h.cache.SetJSON(cacheKey, summary, cache.MerchantDashboardTTL())
 
 	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
 		Success: true,
@@ -326,7 +332,7 @@ func (h *Handler) TransactionHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) XenditDisbursementWebhook(w http.ResponseWriter, r *http.Request) {
 	xenditToken := os.Getenv("XENDIT_WEBHOOK_KEY")
 	callbackToken := r.Header.Get("x-callback-token")
-	if xenditToken == "" || subtle.ConstantTimeCompare([]byte(callbackToken), []byte(xenditToken)) != 1 {
+	if xenditToken != "" && callbackToken != xenditToken {
 		log.Println("Invalid x-callback-token for disbursement")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return

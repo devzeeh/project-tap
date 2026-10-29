@@ -2,8 +2,11 @@ package auth
 
 import (
 	"crypto/rand"
+	"fmt"
 	"log"
 	"math/big"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -44,4 +47,42 @@ func GenerateUserID(repo *Repository) (int64, error) {
 		}
 		log.Println("GenerateUserID: collision detected, retrying...")
 	}
+}
+
+// GenerateCustomerUsername derives a unique, clean alphanumeric username from
+// the user's first name. If the username is already taken, a random numerical
+// suffix is appended to prevent duplicate key collisions.
+func GenerateCustomerUsername(repo *Repository, firstName string) (string, error) {
+	reg := regexp.MustCompile(`[^a-zA-Z0-9]`)
+	clean := strings.ToLower(reg.ReplaceAllString(firstName, ""))
+	if clean == "" {
+		clean = "user"
+	}
+	if len(clean) > 30 {
+		clean = clean[:30]
+	}
+
+	exists, err := repo.IsUsernameExist(clean)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return clean, nil
+	}
+
+	for i := 0; i < 10; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(9000))
+		if err != nil {
+			return "", err
+		}
+		candidate := fmt.Sprintf("%s%d", clean, n.Int64()+1000)
+		exists, err := repo.IsUsernameExist(candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return fmt.Sprintf("%s%d", clean, time.Now().Unix()%100000), nil
 }

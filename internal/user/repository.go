@@ -3,41 +3,152 @@ package user
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
-
 	"project-tap/internal/pkg/database"
 
 	"github.com/shopspring/decimal"
 )
 
-// Repository handles database interactions for the user package.
+// Repository handles simple, reusable DB queries for the merchant package.
 type Repository struct {
 	store database.Store
 }
 
-// NewRepository creates a new instance of Repository.
+// NewRepository creates a new instance of Repository using the provided database store.
 func NewRepository(store database.Store) *Repository {
 	return &Repository{store: store}
 }
 
-// FindUsernameByUserIDOrID looks up the username corresponding to an auth token user_id, id, or username.
-func (r *Repository) FindUsernameByUserIDOrID(ctx context.Context, identifier string) (string, error) {
-	var username string
-	query := "SELECT username FROM users WHERE user_id = ? OR id = ? OR username = ?"
-	err := r.store.QueryRowContext(ctx, query, identifier, identifier, identifier).Scan(&username)
-	if err != nil {
-		return "", err
-	}
-	return username, nil
+type userCardRow struct {
+	id            int
+	username      string
+	fullName      string
+	email         string
+	pendingEmail  string
+	phone         string
+	userType      string
+	balance       float64
+	loyaltyPoints decimal.Decimal
+	cardNumber    string
+	expiryDate    string
+	cardStatus    string
+	userStatus    string
 }
 
-// GetDashboardUserData fetches customer profile and card balance data.
-func (r *Repository) GetDashboardUserData(ctx context.Context, username string) (DashboardUser, error) {
-	stmt := `
-		SELECT 
+type recentTransaction struct {
+	TransactionID string          `json:"transaction_id"`
+	TerminalID    string          `json:"terminal_id"`
+	Date          string          `json:"date" db:"date"`
+	Time          string          `json:"time"`
+	Description   string          `json:"description" db:"description"`
+	Type          string          `json:"type" db:"transaction_type"`
+	Amount        decimal.Decimal `json:"amount" db:"transaction_amount"`
+	Status        string          `json:"status" db:"status"`
+	MerchantName  string          `json:"merchant_name"`
+	MerchantID    string          `json:"merchant_id"`
+	ServiceFee    float64         `json:"service_fee"`
+	PointsEarned  decimal.Decimal `json:"points_earned"`
+}
+
+type userTransactionRow struct {
+	transactionID string
+	terminalID    string
+	createdAt     string
+	txnType       string
+	amount        float64
+	status        string
+	description   string
+	businessName  string
+	merchantID    string
+	pointsEarned  decimal.Decimal
+	cardNumber    string
+}
+
+type UserCard struct {
+	UserID     string
+	Balance    decimal.Decimal
+	CardNumber string
+}
+
+type CardPayerInfo struct {
+	CardNumber string
+	Email      string
+}
+
+type PendingTopUp struct {
+	CardNumber     string
+	Amount         float64
+	ConvenienceFee float64
+	Status         string
+}
+
+func (r *Repository) GetRecentTransaction(ctx context.Context, username string) ([]Transaction, error) {
+	rows, err := r.store.QueryContext(ctx,
+		`(SELECT 
+        t.transaction_id, 
+        COALESCE(t.description, '') AS description, 
+        t.created_at, 
+        COALESCE(t.transaction_type, '') AS transaction_type, 
+        t.amount, 
+        COALESCE(t.terminal_id, '') AS terminal_id, 
+        COALESCE(t.status, '') AS status, 
+        COALESCE(m.business_name, '') AS business_name, 
+        COALESCE(m.merchant_id, '') AS merchant_id, 
+        COALESCE(t.points_earned, 0) AS points_earned
+    FROM transactions t 
+    JOIN users u ON t.user_id = u.user_id
+    LEFT JOIN merchants m ON t.merchant_id = m.merchant_id
+    WHERE u.username = ?)
+    UNION ALL
+    (SELECT 
+        CONCAT('LOG-', ual.id) AS transaction_id, 
+        ual.description, 
+        ual.created_at, 
+        ual.activity_type AS transaction_type, 
+        0.00 AS amount, 
+        '' AS terminal_id, 
+        ual.status, 
+        '' AS business_name, 
+        '' AS merchant_id, 
+        0 AS points_earned
+    FROM user_activity_logs ual
+    JOIN users u ON ual.user_id = u.user_id
+    WHERE u.username = ?)
+    ORDER BY created_at DESC LIMIT 5`, username, username)
+
+	if err != nil {
+		return nil, fmt.Errorf("get recent user transactions (username %q): %w", username, err)
+	}
+	defer rows.Close()
+
+	var result []Transaction
+	for rows.Next() {
+		var t Transaction
+		if err := rows.Scan(
+			&t.TransactionID, &t.Description, &t.CreatedAt, &t.Type, &t.Amount,
+			&t.TerminalID, &t.Status, &t.BusinessName, &t.MerchantID, &t.PointsEarned,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent user transaction row (username %q): %w", username, err)
+		}
+		result = append(result, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent user transactions (username %q): %w", username, err)
+	}
+	return result, nil
+}
+
+// Dashboard
+
+func (r *Repository) GetUserByusername(ctx context.Context, username string) (*userCardRow, error) {
+	var row userCardRow
+
+	err := r.store.QueryRowContext(ctx,
+		`SELECT 
 			u.id,
 			u.username,
 			u.name,
@@ -54,455 +165,423 @@ func (r *Repository) GetDashboardUserData(ctx context.Context, username string) 
 		FROM users u
 		LEFT JOIN cards c 
 			ON u.user_id = c.user_id
-		WHERE u.username = ?
-	`
-	var (
-		id            int
-		user, fullName, email, pendingEmail, phone, userType, cardNumber, expiryDate, cardStatus, userStatus string
-		balance       float64
-		loyaltyPoints decimal.Decimal
-	)
-	err := r.store.QueryRowContext(ctx, stmt, username).Scan(
-		&id, &user, &fullName, &email, &pendingEmail, &phone, &userType,
-		&balance, &loyaltyPoints, &cardNumber, &expiryDate, &cardStatus, &userStatus,
-	)
+		WHERE u.username = ?`, username).Scan(
+		&row.id, &row.username, &row.fullName, &row.email, &row.pendingEmail,
+		&row.phone, &row.userType, &row.balance, &row.loyaltyPoints, &row.cardNumber,
+		&row.expiryDate, &row.cardStatus, &row.userStatus)
+
 	if err != nil {
-		return DashboardUser{}, err
-	}
-
-	initials := ""
-	parts := strings.Fields(fullName)
-	if len(parts) > 0 {
-		initials += string([]rune(parts[0])[0])
-		if len(parts) > 1 {
-			initials += string([]rune(parts[len(parts)-1])[0])
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrUserNotFound
 		}
-	}
-	if initials == "" {
-		initials = "U"
-	}
-	initials = strings.ToUpper(initials)
-
-	expiryStr := "MM/YY"
-	if len(expiryDate) >= 10 {
-		tExpiry, errT := time.Parse("2006-01-02", expiryDate[:10])
-		if errT == nil {
-			expiryStr = tExpiry.Format("01/06")
-		}
+		return nil, fmt.Errorf("get user card by username (username %q): %w", username, err)
 	}
 
-	return DashboardUser{
-		ID:            id,
-		UserID:        user,
-		Username:      user,
-		Name:          fullName,
-		Email:         email,
-		PendingEmail:  pendingEmail,
-		Phone:         phone,
-		Initials:      initials,
-		Balance:       balance,
-		LoyaltyPoints: loyaltyPoints,
-		AccountType:   userType,
-		CardNumber:    cardNumber,
-		CardExpiry:    expiryStr,
-		CardStatus:    cardStatus,
-		UserStatus:    userStatus,
-	}, nil
+	return &row, nil
 }
 
-// GetRecentTransactions retrieves the 5 most recent transactions for the dashboard view.
-func (r *Repository) GetRecentTransactions(ctx context.Context, username string) ([]Transaction, error) {
-	txnQuery := `
-    (SELECT 
-        t.transaction_id, 
-        t.description, 
-        t.created_at, 
-        COALESCE(t.transaction_type, '') AS transaction_type, 
-        t.amount, 
-        COALESCE(t.terminal_id, '') AS terminal_id, 
-        COALESCE(t.status, '') AS status, 
-        m.business_name, 
-        m.merchant_id, 
-        COALESCE(t.points_earned, 0) AS points_earned
-    FROM transactions t 
-    JOIN users u ON t.user_id = u.user_id
-    LEFT JOIN merchants m ON t.merchant_id = m.merchant_id
-    WHERE u.username = ?)
-    UNION ALL
-    (SELECT 
-        CONCAT('LOG-', ual.id) AS transaction_id, 
-        ual.description, 
-        ual.created_at, 
-        ual.activity_type AS transaction_type, 
-        0.00 AS amount, 
-        '' AS terminal_id, 
-        ual.status, 
-        NULL AS business_name, 
-        NULL AS merchant_id, 
-        0 AS points_earned
-    FROM user_activity_logs ual
-    JOIN users u ON ual.user_id = u.user_id
-    WHERE u.username = ?)
-    ORDER BY created_at DESC LIMIT 5
-`
-	rows, err := r.store.QueryContext(ctx, txnQuery, username, username)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+// Customer profile
 
-	var transactions []Transaction
-	for rows.Next() {
-		var t Transaction
-		var createdAt string
-		var description sql.NullString
-		var businessName sql.NullString
-		var merchantId sql.NullString
-		var pointsEarned decimal.Decimal
-
-		if err := rows.Scan(
-			&t.TransactionID,
-			&description,
-			&createdAt,
-			&t.Type,
-			&t.Amount,
-			&t.TerminalID,
-			&t.Status,
-			&businessName,
-			&merchantId,
-			&pointsEarned,
-		); err != nil {
-			continue
-		}
-		t.Date = formatDate(createdAt)
-		t.Time = formatTime(createdAt)
-		if description.Valid {
-			t.Description = description.String
-		}
-		if businessName.Valid && businessName.String != "" {
-			t.MerchantName = businessName.String
-		} else {
-			t.MerchantName = t.Description
-		}
-		if merchantId.Valid {
-			t.MerchantID = merchantId.String
-		} else {
-			t.MerchantID = "N/A"
-		}
-		t.PointsEarned = pointsEarned
-		transactions = append(transactions, t)
-	}
-
-	return transactions, nil
-}
-
-// GetTransactionsList retrieves all transactions associated with the user.
-func (r *Repository) GetTransactionsList(ctx context.Context, username string) ([]TxnResponse, error) {
-	txnQuery := `
-			(SELECT 
-				t.transaction_id, 
-				COALESCE(t.terminal_id, '') AS terminal_id, 
-				t.created_at, 
-				COALESCE(t.transaction_type, '') AS transaction_type, 
-				t.amount, 
-				COALESCE(t.status, '') AS status, 
-				COALESCE(t.description, '') AS description, 
-				COALESCE(m.business_name, '') AS business_name, 
-				COALESCE(m.merchant_id, '') AS merchant_id, 
-				COALESCE(t.points_earned, 0) AS points_earned, 
-				COALESCE(c.card_number, '') AS card_number
-			FROM transactions t
-			JOIN users u ON t.user_id = u.user_id
-			LEFT JOIN cards c ON u.user_id = c.user_id
-			LEFT JOIN merchants m ON t.merchant_id = m.merchant_id
-			WHERE u.username = ?)
-			UNION ALL
-			(SELECT 
-				CONCAT('LOG-', ual.id) AS transaction_id, 
-				'' AS terminal_id, 
-				ual.created_at, 
-				ual.activity_type AS transaction_type, 
-				0.00 AS amount, 
-				ual.status, 
-				ual.description, 
-				'' AS business_name, 
-				'' AS merchant_id, 
-				0 AS points_earned, 
-				COALESCE(c.card_number, '') AS card_number
-			FROM user_activity_logs ual
-			JOIN users u ON ual.user_id = u.user_id
-			LEFT JOIN cards c ON u.user_id = c.user_id
-			WHERE u.username = ?)
-			ORDER BY created_at DESC
-		`
-	rows, err := r.store.QueryContext(ctx, txnQuery, username, username)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var transactions []TxnResponse
-	for rows.Next() {
-		var t TxnResponse
-		var createdAt string
-		var cardNum string
-
-		if err := rows.Scan(
-			&t.TransactionID,
-			&t.TerminalID,
-			&createdAt,
-			&t.Type,
-			&t.Amount,
-			&t.Status,
-			&t.Description,
-			&t.MerchantName,
-			&t.MerchantID,
-			&t.PointsEarned,
-			&cardNum,
-		); err != nil {
-			continue
-		}
-
-		t.Date = formatDate(createdAt)
-		t.Time = formatTime(createdAt)
-
-		switch t.Type {
-		case "payment":
-			t.Sender = cardNum
-			t.Receiver = t.MerchantName
-		case "topup":
-			t.Sender = "Top-Up Gateway"
-			t.Receiver = cardNum
-		default:
-			t.Sender = cardNum
-			t.Receiver = "System"
-		}
-
-		transactions = append(transactions, t)
-	}
-
-	return transactions, nil
-}
-
-// GetUserIDByUsername retrieves the user_id column from users table by username.
-func (r *Repository) GetUserIDByUsername(ctx context.Context, username string) (string, error) {
-	var userID string
-	err := r.store.QueryRowContext(ctx, "SELECT user_id FROM users WHERE username = ?", username).Scan(&userID)
-	return userID, err
-}
-
-// GetCardDetails retrieves balance and card number for a given user_id.
-func (r *Repository) GetCardDetails(ctx context.Context, userID string) (float64, string, error) {
-	var balance float64
-	var cardNumber string
-	err := r.store.QueryRowContext(ctx, "SELECT balance, card_number FROM cards WHERE user_id = ?", userID).Scan(&balance, &cardNumber)
-	return balance, cardNumber, err
-}
-
-// UpdateCardStatus updates the status column in cards table for a given user_id.
-func (r *Repository) UpdateCardStatus(ctx context.Context, userID, status string) error {
-	_, err := r.store.ExecContext(ctx, "UPDATE cards SET status = ? WHERE user_id = ?", status, userID)
-	return err
-}
-
-// RequestCardReplacement atomically deducts the replacement fee and blocks the current card.
-func (r *Repository) RequestCardReplacement(ctx context.Context, userID, cardNumber string, fee float64) error {
-	tx, err := r.store.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	res, err := tx.ExecContext(ctx, "UPDATE cards SET balance = balance - ?, status = 'blocked' WHERE user_id = ? AND balance >= ?", fee, userID, fee)
-	if err != nil {
-		return err
-	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil || rowsAffected == 0 {
-		return ErrInsufficientBalance
-	}
-
-	txnID := fmt.Sprintf("REP-%s-%d", cardNumber, time.Now().Unix())
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO transactions (transaction_id, card_number, user_id, transaction_type, amount, status, description)
-		VALUES (?, ?, ?, 'payment', ?, 'completed', 'Card Replacement Fee')
-	`, txnID, cardNumber, userID, fee)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
-// GetPasswordHash retrieves the bcrypt password hash for a user.
 func (r *Repository) GetPasswordHash(ctx context.Context, username string) (string, error) {
-	var currentHash string
-	err := r.store.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE username = ?", username).Scan(&currentHash)
-	return currentHash, err
+	var hash string
+	err := r.store.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE username = ?", username).Scan(&hash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrUserNotFound
+		}
+		return "", fmt.Errorf("get password hash (username %q): %w", username, err)
+	}
+	return hash, nil
 }
 
-// UpdatePassword sets a new password hash for the given user.
-func (r *Repository) UpdatePassword(ctx context.Context, username, newHash string) error {
-	_, err := r.store.ExecContext(ctx, "UPDATE users SET password_hash = ? WHERE username = ?", newHash, username)
-	return err
+func (r *Repository) GetEmailAndName(ctx context.Context, username string) (email, name string, err error) {
+	err = r.store.QueryRowContext(ctx, "SELECT email, name FROM users WHERE username = ?", username).Scan(&email, &name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", ErrUserNotFound
+		}
+		return "", "", fmt.Errorf("get email and name (username %q): %w", username, err)
+	}
+	return email, name, nil
 }
 
-// GetEmailAndName retrieves the email and name for a given username.
-func (r *Repository) GetEmailAndName(ctx context.Context, username string) (string, string, error) {
-	var email, name string
-	err := r.store.QueryRowContext(ctx, "SELECT email, name FROM users WHERE username = ?", username).Scan(&email, &name)
-	return email, name, err
+// UpdateProfileFields runs a dynamic UPDATE users SET ... using the given
+// column=value pairs. Column names always come from the service's fixed
+// internal mapping, never directly from request input.
+func (r *Repository) UpdateProfileFields(ctx context.Context, username string, fields []string, args []any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	query := "UPDATE users SET " + strings.Join(fields, ", ") + " WHERE username = ?"
+	args = append(args, username)
+
+	if _, err := r.store.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("update profile fields (username %q): %w", username, err)
+	}
+	return nil
 }
 
-// UpdateProfile executes a dynamic SQL update for profile fields.
-func (r *Repository) UpdateProfile(ctx context.Context, query string, args []any) error {
-	_, err := r.store.ExecContext(ctx, query, args...)
-	return err
+func (r *Repository) UpdatePasswordHash(ctx context.Context, username, hash string) error {
+	if _, err := r.store.ExecContext(ctx, "UPDATE users SET password_hash = ? WHERE username = ?", hash, username); err != nil {
+		return fmt.Errorf("update password hash (username %q): %w", username, err)
+	}
+	return nil
 }
 
-// VerifyEmailToken validates a pending email verification token.
-func (r *Repository) VerifyEmailToken(ctx context.Context, token string) (string, string, error) {
-	var username, pendingEmail string
-	err := r.store.QueryRowContext(ctx, "SELECT username, pending_email FROM users WHERE email_verification_token = ?", token).Scan(&username, &pendingEmail)
-	return username, pendingEmail, err
+// Cards
+
+func (r *Repository) GetUserID(ctx context.Context, username string) (string, error) {
+	var userID string
+	err := r.store.QueryRowContext(ctx, `SELECT user_id FROM users WHERE username = ?`, username).Scan(&userID)
+	if err != nil {
+		return "", fmt.Errorf("get user id (username %q): %w", username, err)
+	}
+	return userID, nil
 }
 
-// ApplyVerifiedEmail updates the user's email and clears verification fields.
-func (r *Repository) ApplyVerifiedEmail(ctx context.Context, username, newEmail string) error {
-	_, err := r.store.ExecContext(ctx, "UPDATE users SET email = ?, pending_email = NULL, email_verification_token = NULL WHERE username = ?", newEmail, username)
-	return err
+func (r *Repository) UpdateCardStatus(ctx context.Context, status, userID string) error {
+	_, err := r.store.ExecContext(ctx, `UPDATE cards SET status = ? WHERE user_id = ?`, status, userID)
+	if err != nil {
+		return fmt.Errorf("update card status (user %q): %w", userID, err)
+	}
+	return nil
 }
 
-// GetUserCardAndEmail retrieves the active card number and email for a given username.
-func (r *Repository) GetUserCardAndEmail(ctx context.Context, username string) (string, string, error) {
-	var cardNumber, email string
-	query := `
+func (r *Repository) GetCardBalance(ctx context.Context, userID string) (*UserCard, error) {
+	var c UserCard
+	c.UserID = userID
+	err := r.store.QueryRowContext(ctx, "SELECT balance, card_number FROM cards WHERE user_id = ?", userID).
+		Scan(&c.Balance, &c.CardNumber)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCardNotFound
+		}
+		return nil, fmt.Errorf("get card balance (user %q): %w", userID, err)
+	}
+	return &c, nil
+}
+
+// ReplaceCard atomically deducts the replacement fee, locks the card, and
+// records the fee transaction. All three succeed or none do.
+func (r *Repository) ReplaceCard(ctx context.Context, userID, cardNumber, txnID string, replacementFee float64) error {
+	tx, err := r.store.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("replace card (user %q): begin tx: %w", userID, err)
+	}
+	defer tx.Rollback() // no-op if Commit succeeds
+
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE cards SET balance = balance - ?, status = 'blocked' WHERE user_id = ?",
+		replacementFee, userID,
+	); err != nil {
+		return fmt.Errorf("replace card (user %q): update card: %w", userID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO transactions (transaction_id, card_number, user_id, transaction_type, amount, status, description)
+		VALUES (?, ?, ?, 'payment', ?, 'completed', 'Card Replacement Fee')`,
+		txnID, cardNumber, userID, replacementFee,
+	); err != nil {
+		return fmt.Errorf("replace card (user %q): insert transaction: %w", userID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("replace card (user %q): commit: %w", userID, err)
+	}
+
+	return nil
+}
+
+func (r *Repository) GetCardAndEmailByUsername(ctx context.Context, username string) (*CardPayerInfo, error) {
+	var info CardPayerInfo
+	err := r.store.QueryRowContext(ctx, `
 		SELECT c.card_number, u.email 
 		FROM cards c 
 		JOIN users u ON c.user_id = u.user_id 
-		WHERE u.username = ? LIMIT 1
-	`
-	err := r.store.QueryRowContext(ctx, query, username).Scan(&cardNumber, &email)
-	return cardNumber, email, err
+		WHERE u.username = ? LIMIT 1`, username).Scan(&info.CardNumber, &info.Email)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCardNotFound
+		}
+		return nil, fmt.Errorf("get card and email (username %q): %w", username, err)
+	}
+	return &info, nil
 }
 
-// CreatePendingTopUp creates a pending record in the top_ups table.
-func (r *Repository) CreatePendingTopUp(ctx context.Context, topupID, cardNumber string, topupAmount, feeAmount decimal.Decimal) error {
-	queryTopUp := `INSERT INTO top_ups (topup_id, card_number, amount, convenience_fee, gateway_cost, payment_method, handled_by, external_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := r.store.ExecContext(ctx, queryTopUp, topupID, cardNumber, topupAmount, feeAmount, 0.0, "xendit", "payment gateway", topupID, "pending")
-	return err
+func (r *Repository) InsertPendingTopUp(ctx context.Context, topupID, cardNumber string, amount, fee decimal.Decimal) error {
+	_, err := r.store.ExecContext(ctx, `
+		INSERT INTO top_ups (topup_id, card_number, amount, convenience_fee, gateway_cost, payment_method, handled_by, external_id, status) 
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		topupID, cardNumber, amount, fee, 0.0, "xendit", "payment gateway", topupID, "pending")
+	if err != nil {
+		return fmt.Errorf("insert pending topup (topup %q): %w", topupID, err)
+	}
+	return nil
 }
 
-// ProcessPaidTopUp updates card balance, marks topup completed, and writes transaction logs atomically.
-func (r *Repository) ProcessPaidTopUp(ctx context.Context, externalID string, payload XenditWebhookPayload) (string, error) {
-	var affectedUsername string
-
-	err := r.store.ExecTx(ctx, func(tx *sql.Tx) error {
-		var cardNumber string
-		var convenienceFee float64
-		var currentStatus string
-		var amount decimal.Decimal
-
-		err := tx.QueryRowContext(ctx, `SELECT card_number, amount, convenience_fee, status FROM top_ups WHERE topup_id = ? FOR UPDATE`, externalID).Scan(&cardNumber, &amount, &convenienceFee, &currentStatus)
-		if err != nil {
-			log.Println("ProcessPaidTopUp: record not found or invalid external_id:", err)
-			return nil
+func (r *Repository) GetUserIDByCardNumber(ctx context.Context, cardNumber string) (string, error) {
+	var userID string
+	err := r.store.QueryRowContext(ctx, "SELECT user_id FROM cards WHERE card_number = ?", cardNumber).Scan(&userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrCardNotFound
 		}
-
-		if currentStatus == "completed" {
-			log.Println("ProcessPaidTopUp: top-up already completed, skipping.")
-			return nil
-		}
-
-		if _, err := tx.ExecContext(ctx, `UPDATE cards SET balance = balance + ? WHERE card_number = ?`, amount, cardNumber); err != nil {
-			return fmt.Errorf("failed to update card balance: %w", err)
-		}
-
-		if _, err := tx.ExecContext(ctx, `UPDATE top_ups SET status = 'completed' WHERE topup_id = ?`, externalID); err != nil {
-			return fmt.Errorf("failed to update top_ups status: %w", err)
-		}
-
-		res, err := tx.ExecContext(ctx, `UPDATE transactions SET status = 'completed', description = 'Successful topup via Xendit' WHERE card_number = ? AND transaction_type = 'topup' AND status = 'pending' AND amount = ? ORDER BY created_at DESC LIMIT 1`, cardNumber, amount)
-		if err != nil {
-			return fmt.Errorf("failed to update transactions status: %w", err)
-		}
-
-		rowsAffected, _ := res.RowsAffected()
-		if rowsAffected == 0 {
-			transactionID := fmt.Sprintf("TX-%d", time.Now().UnixNano())
-			var userID string
-			_ = tx.QueryRowContext(ctx, "SELECT user_id FROM cards WHERE card_number = ?", cardNumber).Scan(&userID)
-			queryTx := `INSERT INTO transactions (transaction_id, card_number, user_id, merchant_id, terminal_id, transaction_type, amount, service_fee, processed_by, description, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-			if _, err := tx.ExecContext(ctx, queryTx, transactionID, cardNumber, userID, "xendit", "xendit", "topup", amount, convenienceFee, "xendit", "Successful topup via Xendit", "completed"); err != nil {
-				return fmt.Errorf("failed to insert transaction: %w", err)
-			}
-		}
-
-		_ = tx.QueryRowContext(ctx, `
-			SELECT u.username 
-			FROM users u 
-			JOIN cards c ON u.user_id = c.user_id 
-			JOIN top_ups tu ON c.card_number = tu.card_number 
-			WHERE tu.topup_id = ?
-		`, externalID).Scan(&affectedUsername)
-
-		return nil
-	})
-
-	return affectedUsername, err
+		return "", fmt.Errorf("get user id by card number (card %q): %w", cardNumber, err)
+	}
+	return userID, nil
 }
 
-// ProcessNonPaidTopUp updates the top_ups status and cleans up any pending transactions if failed/expired/canceled.
-func (r *Repository) ProcessNonPaidTopUp(ctx context.Context, externalID, status string) (string, error) {
-	_, _ = r.store.ExecContext(ctx, `UPDATE top_ups SET status = ? WHERE topup_id = ?`, strings.ToLower(status), externalID)
+// CompleteTopUp atomically credits the card balance, records the top-up
+// ledger entry, and records the spending-ledger transaction. All three
+// succeed together or none do.
+func (r *Repository) CompleteTopUp(ctx context.Context, rec TopUpRecord, topupID, transactionID, userID string) error {
+	tx, err := r.store.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("complete topup (card %q): begin tx: %w", rec.CardNumber, err)
+	}
+	defer tx.Rollback()
 
-	var cardNumber string
-	var amount decimal.Decimal
-	_ = r.store.QueryRowContext(ctx, `SELECT card_number, amount FROM top_ups WHERE topup_id = ?`, externalID).Scan(&cardNumber, &amount)
-
-	if cardNumber != "" {
-		_, _ = r.store.ExecContext(ctx, `DELETE FROM transactions WHERE card_number = ? AND transaction_type = 'topup' AND status = 'pending' AND amount = ? LIMIT 1`, cardNumber, amount)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE cards SET balance = balance + ? WHERE card_number = ?`,
+		rec.Amount, rec.CardNumber,
+	); err != nil {
+		return fmt.Errorf("complete topup (card %q): update balance: %w", rec.CardNumber, err)
 	}
 
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO top_ups (topup_id, card_number, amount, convenience_fee, gateway_cost, payment_method) 
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		topupID, rec.CardNumber, rec.Amount, rec.ConvenienceFee, rec.GatewayCost, rec.PaymentMethod,
+	); err != nil {
+		return fmt.Errorf("complete topup (card %q): insert topup ledger: %w", rec.CardNumber, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO transactions (transaction_id, card_number, user_id, merchant_id, terminal_id, transaction_type, amount, service_fee, processed_by, status, description) 
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		transactionID, rec.CardNumber, userID, sql.NullString{}, sql.NullString{}, "topup",
+		rec.Amount, rec.ConvenienceFee, sql.NullString{}, "completed", "Topup completed",
+	); err != nil {
+		return fmt.Errorf("complete topup (card %q): insert transaction: %w", rec.CardNumber, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("complete topup (card %q): commit: %w", rec.CardNumber, err)
+	}
+	return nil
+}
+
+func (r *Repository) GetUserTransactions(ctx context.Context, username string) ([]userTransactionRow, error) {
+	rows, err := r.store.QueryContext(ctx, `
+		(SELECT 
+			t.transaction_id, 
+			COALESCE(t.terminal_id, '') AS terminal_id, 
+			t.created_at, 
+			COALESCE(t.transaction_type, '') AS transaction_type, 
+			t.amount, 
+			COALESCE(t.status, '') AS status,
+			COALESCE(t.description, '') AS description,
+			COALESCE(m.business_name, '') AS business_name,
+			COALESCE(m.merchant_id, '') AS merchant_id,
+			COALESCE(t.points_earned, 0) AS points_earned,
+			COALESCE(c.card_number, '') AS card_number
+		FROM transactions t
+		LEFT JOIN cards c ON t.card_number = c.card_number 
+		JOIN users u ON t.user_id = u.user_id
+		LEFT JOIN merchants m ON t.merchant_id = m.merchant_id
+		WHERE u.username = ?)
+		UNION ALL
+		(SELECT 
+			CONCAT('LOG-', ual.id) AS transaction_id, 
+			'' AS terminal_id, 
+			ual.created_at, 
+			ual.activity_type AS transaction_type, 
+			0.00 AS amount, 
+			ual.status,
+			ual.description,
+			'' AS business_name,
+			'' AS merchant_id,
+			0 AS points_earned,
+			'' AS card_number
+		FROM user_activity_logs ual
+		JOIN users u ON ual.user_id = u.user_id
+		WHERE u.username = ?)
+		ORDER BY created_at DESC
+	`, username, username)
+	if err != nil {
+		return nil, fmt.Errorf("get user transactions (username %q): %w", username, err)
+	}
+	defer rows.Close()
+
+	var results []userTransactionRow
+	for rows.Next() {
+		var t userTransactionRow
+		if err := rows.Scan(
+			&t.transactionID, &t.terminalID, &t.createdAt, &t.txnType, &t.amount,
+			&t.status, &t.description, &t.businessName, &t.merchantID,
+			&t.pointsEarned, &t.cardNumber,
+		); err != nil {
+			return nil, fmt.Errorf("scan user transaction row (username %q): %w", username, err)
+		}
+		results = append(results, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate user transactions (username %q): %w", username, err)
+	}
+
+	return results, nil
+}
+
+func (r *Repository) GetPendingTopUp(ctx context.Context, tx *sql.Tx, topupID string) (*PendingTopUp, error) {
+	var t PendingTopUp
+	err := tx.QueryRowContext(ctx, `SELECT card_number, amount, convenience_fee, status FROM top_ups WHERE topup_id = ?`, topupID).
+		Scan(&t.CardNumber, &t.Amount, &t.ConvenienceFee, &t.Status)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrTopUpNotFound
+		}
+		return nil, fmt.Errorf("get pending topup (topup %q): %w", topupID, err)
+	}
+	return &t, nil
+}
+
+// CompletePendingTopUp credits the card balance, marks the top-up ledger
+// completed, and upserts the matching transaction row — all atomically.
+// Returns ErrTopUpAlreadyCompleted (non-fatal, safe to ignore) if the
+// webhook was already processed, so callers can ack Xendit without retrying.
+func (r *Repository) CompletePendingTopUp(ctx context.Context, topupID string) error {
+	tx, err := r.store.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("complete pending topup (topup %q): begin tx: %w", topupID, err)
+	}
+	defer tx.Rollback()
+
+	topUp, err := r.GetPendingTopUp(ctx, tx, topupID)
+	if err != nil {
+		if errors.Is(err, ErrTopUpNotFound) {
+			// Not found: ignore rather than fail, so Xendit doesn't retry forever.
+			return nil
+		}
+		return err
+	}
+
+	if topUp.Status == "completed" {
+		return ErrTopUpAlreadyCompleted
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE cards SET balance = balance + ? WHERE card_number = ?`, topUp.Amount, topUp.CardNumber); err != nil {
+		return fmt.Errorf("complete pending topup (topup %q): update balance: %w", topupID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE top_ups SET status = 'completed' WHERE topup_id = ?`, topupID); err != nil {
+		return fmt.Errorf("complete pending topup (topup %q): update topup status: %w", topupID, err)
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE transactions SET status = 'completed', description = 'Successful topup via Xendit' 
+		WHERE card_number = ? AND transaction_type = 'topup' AND status = 'pending' AND amount = ? 
+		ORDER BY created_at DESC LIMIT 1`, topUp.CardNumber, topUp.Amount)
+	if err != nil {
+		return fmt.Errorf("complete pending topup (topup %q): update transaction: %w", topupID, err)
+	}
+
+	if rowsAffected, _ := res.RowsAffected(); rowsAffected == 0 {
+		var userID string
+		if err := tx.QueryRowContext(ctx, "SELECT user_id FROM cards WHERE card_number = ?", topUp.CardNumber).Scan(&userID); err != nil {
+			return fmt.Errorf("complete pending topup (topup %q): lookup user id: %w", topupID, err)
+		}
+
+		transactionID := fmt.Sprintf("TX-%d", time.Now().UnixNano())
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO transactions (transaction_id, card_number, user_id, merchant_id, terminal_id, transaction_type, amount, service_fee, processed_by, description, status) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			transactionID, topUp.CardNumber, userID, "xendit", "xendit", "topup", topUp.Amount, topUp.ConvenienceFee, "xendit", "Successful topup via Xendit", "completed",
+		); err != nil {
+			return fmt.Errorf("complete pending topup (topup %q): insert transaction: %w", topupID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("complete pending topup (topup %q): commit: %w", topupID, err)
+	}
+
+	log.Printf("Successfully loaded ₱%.2f onto card %s via Xendit", topUp.Amount, topUp.CardNumber)
+	return nil
+}
+
+func (r *Repository) UpdateTopUpStatus(ctx context.Context, topupID, status string) error {
+	if _, err := r.store.ExecContext(ctx, `UPDATE top_ups SET status = ? WHERE topup_id = ?`, status, topupID); err != nil {
+		return fmt.Errorf("update topup status (topup %q): %w", topupID, err)
+	}
+	return nil
+}
+
+func (r *Repository) DeletePendingTopUpTransaction(ctx context.Context, topupID string) error {
+	var cardNumber string
+	var amount float64
+	err := r.store.QueryRowContext(ctx, `SELECT card_number, amount FROM top_ups WHERE topup_id = ?`, topupID).Scan(&cardNumber, &amount)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // nothing to clean up
+		}
+		return fmt.Errorf("delete pending topup transaction (topup %q): lookup: %w", topupID, err)
+	}
+
+	if _, err := r.store.ExecContext(ctx, `
+		DELETE FROM transactions WHERE card_number = ? AND transaction_type = 'topup' AND status = 'pending' AND amount = ? 
+		ORDER BY created_at DESC LIMIT 1`, cardNumber, amount); err != nil {
+		return fmt.Errorf("delete pending topup transaction (topup %q): %w", topupID, err)
+	}
+	return nil
+}
+
+func (r *Repository) GetPendingEmailByToken(ctx context.Context, token string) (username, pendingEmail string, err error) {
+	err = r.store.QueryRowContext(ctx, "SELECT username, pending_email FROM users WHERE email_verification_token = ?", token).
+		Scan(&username, &pendingEmail)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", ErrInvalidToken
+		}
+		return "", "", fmt.Errorf("get pending email by token: %w", err)
+	}
+	return username, pendingEmail, nil
+}
+
+func (r *Repository) ConfirmEmailChange(ctx context.Context, username, newEmail string) error {
+	_, err := r.store.ExecContext(ctx,
+		"UPDATE users SET email = ?, pending_email = NULL, email_verification_token = NULL WHERE username = ?",
+		newEmail, username)
+	if err != nil {
+		return fmt.Errorf("confirm email change (username %q): %w", username, err)
+	}
+	return nil
+}
+
+func (r *Repository) GetUsernameByCardNumber(ctx context.Context, cardNumber string) (string, error) {
 	var username string
-	_ = r.store.QueryRowContext(ctx, `
+	err := r.store.QueryRowContext(ctx, `
+		SELECT u.username 
+		FROM users u 
+		JOIN cards c ON u.user_id = c.user_id 
+		WHERE c.card_number = ? LIMIT 1
+	`, cardNumber).Scan(&username)
+	if err != nil {
+		return "", err
+	}
+	return username, nil
+}
+
+func (r *Repository) GetUsernameByTopUpID(ctx context.Context, topupID string) (string, error) {
+	var username string
+	err := r.store.QueryRowContext(ctx, `
 		SELECT u.username 
 		FROM users u 
 		JOIN cards c ON u.user_id = c.user_id 
 		JOIN top_ups tu ON c.card_number = tu.card_number 
-		WHERE tu.topup_id = ?
-	`, externalID).Scan(&username)
-
+		WHERE tu.topup_id = ? LIMIT 1
+	`, topupID).Scan(&username)
+	if err != nil {
+		return "", err
+	}
 	return username, nil
-}
-
-// Helpers
-func formatDate(dbTime string) string {
-	t, err := time.Parse("2006-01-02 15:04:05", dbTime)
-	if err == nil {
-		return t.Format("Jan _2, 2006")
-	}
-	t2, err := time.Parse(time.RFC3339, dbTime)
-	if err == nil {
-		return t2.Format("Jan _2, 2006")
-	}
-	if len(dbTime) >= 10 {
-		return dbTime[:10]
-	}
-	return dbTime
-}
-
-func formatTime(dbTime string) string {
-	t, err := time.Parse("2006-01-02 15:04:05", dbTime)
-	if err == nil {
-		return t.Format("03:04 PM")
-	}
-	t2, err := time.Parse(time.RFC3339, dbTime)
-	if err == nil {
-		return t2.Format("03:04 PM")
-	}
-	if len(dbTime) > 10 {
-		return dbTime[11:16]
-	}
-	return ""
 }

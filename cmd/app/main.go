@@ -84,7 +84,9 @@ func main() {
 	merchantHandler := merchant.NewHandler(merchantSvc, tpl, redisCache)
 
 	userRepo := user.NewRepository(store)
-	userSvc := user.NewService(userRepo)
+	invoiceGateway := user.NewXenditInvoiceGateway(os.Getenv("XENDIT_SECRET_KEY"))
+	mailer := user.NewSMTPMailerFromEnv(os.Getenv("SMTP_HOST"), os.Getenv("SMTP_SENDER"), os.Getenv("SMTP_EMAIL"), os.Getenv("SMTP_PASSWORD"), 587)
+	userSvc := user.NewService(userRepo, mailer, invoiceGateway)
 	userHandler := user.NewHandler(userSvc, tpl, redisCache)
 
 	// Middleware definitions

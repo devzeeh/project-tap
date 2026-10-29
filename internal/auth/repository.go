@@ -20,7 +20,7 @@ func NewRepository(store database.Store) *Repository {
 
 // FindUserByIdentifier looks up a user by email, username, or phone number.
 func (r *Repository) FindUserByIdentifier(identifier string) (User, error) {
-	const stmt = `SELECT COALESCE(NULLIF(user_id, ''), CAST(id AS CHAR)), username, password_hash, role
+	const stmt = `SELECT id, username, password_hash, role
 	              FROM users
 	              WHERE email = ? OR username = ? OR phone_number = ?`
 	var u User
@@ -54,6 +54,20 @@ func (r *Repository) IsPhoneExist(phone string) (bool, error) {
 	}
 	if err != nil {
 		log.Printf("phone check error: %v", err)
+		return false, err
+	}
+	return true, nil
+}
+
+// IsUsernameExist returns true if the username is already registered.
+func (r *Repository) IsUsernameExist(username string) (bool, error) {
+	var existing string
+	err := r.store.QueryRow("SELECT username FROM users WHERE username = ?", username).Scan(&existing)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		log.Printf("username check error: %v", err)
 		return false, err
 	}
 	return true, nil

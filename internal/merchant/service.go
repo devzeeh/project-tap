@@ -42,10 +42,16 @@ var (
 )
 
 var docTypeColumnMap = map[string]string{
-	"BIR Certificate": "bir_document",
-	"Valid ID":        "valid_id",
-	"Bank Document":   "bank_document",
-	// default: "business_document"
+	"BIR Certificate":                  "bir_document",
+	"BIR Document":                     "bir_document",
+	"Valid ID":                         "valid_id",
+	"Valid Government ID":              "valid_id",
+	"Owner Valid ID":                   "valid_id",
+	"Other Document":                   "valid_id",
+	"DTI/SEC Registration":             "business_document",
+	"Business Registration":            "business_document",
+	"Business Registration (DTI/SEC)": "business_document",
+	"Bank Document":                    "bank_document",
 }
 
 var validUploadExts = map[string]bool{
@@ -92,8 +98,9 @@ func (s *Service) GetMerchantSummary(ctx context.Context, username string) (*Acc
 		BusinessBankDetails: BusinessBankDetails{
 			AccountHolderName: merchant.accName,
 			BankName:          merchant.bankName,
-			AccountNumber:     maskedAccount(merchant.accNumber),
+			AccountNumber:     merchant.accNumber,
 		},
+		BusinessDocuments: buildDocuments(merchant),
 	}
 	return summary, nil
 }
@@ -325,7 +332,7 @@ func (s *Service) GetDashboard(ctx context.Context, username string) (*MerchantS
 		TotalTransactions:  totalTransactions,
 		GrossRevenue:       revenue.TotalRevenue,
 		TotalRefunds:       refunds,
-		NetRevenue:         revenue.TotalRevenue.Sub(refunds),
+		NetRevenue:         revenue.TotalIncome,
 		TotalServiceFee:    revenue.TotalServiceFee,
 		TotalIncome:        revenue.TotalIncome,
 		SettlementBank:     core.SettlementBank,
@@ -334,8 +341,10 @@ func (s *Service) GetDashboard(ctx context.Context, username string) (*MerchantS
 	}
 
 	if incomeStats != nil {
+		incomeStats.AvailableBalance = incomeStats.NetRevenue.Sub(incomeStats.TotalWithdrawn)
 		summary.AvailableBalance = incomeStats.AvailableBalance
 		summary.MonthlyNetIncome = incomeStats.MonthlyNetIncome
+		summary.NetRevenue = incomeStats.NetRevenue
 	}
 
 	return summary, nil
@@ -503,16 +512,26 @@ func (s *Service) GetTransactions(ctx context.Context, username string, filter T
 
 // ProcessDisbursementWebhook handles status updates from the payment gateway regarding payouts.
 func (s *Service) ProcessDisbursementWebhook(ctx context.Context, externalID, event, failureCode string) error {
+	log.Printf("ProcessDisbursementWebhook: received event=%s for txn=%s (failureCode=%s)", event, externalID, failureCode)
+	var err error
 	switch event {
 	case "payout.succeeded":
-		if err := s.repo.UpdateWithdrawalStatus(ctx, externalID, "completed", "pending"); err != nil {
-			return fmt.Errorf("process disbursement webhook (succeeded, txn %q): %w", externalID, err)
+		err = s.repo.UpdateWithdrawalStatus(ctx, externalID, "completed", "pending")
+		if err == nil {
+			log.Printf("Disbursement succeeded for transaction %s", externalID)
 		}
 	case "payout.failed":
-		if err := s.repo.UpdateWithdrawalStatus(ctx, externalID, "failed", "pending"); err != nil {
-			return fmt.Errorf("process disbursement webhook (failed, txn %q): %w", externalID, err)
+		err = s.repo.UpdateWithdrawalStatus(ctx, externalID, "failed", "pending")
+		if err == nil {
+			log.Printf("Disbursement failed for transaction %s. Reason: %s", externalID, failureCode)
 		}
-		log.Printf("Disbursement failed for transaction %s. Reason: %s", externalID, failureCode)
+	}
+	if err != nil {
+		if errors.Is(err, ErrWithdrawalNotFound) {
+			log.Printf("ProcessDisbursementWebhook: withdrawal transaction %s not found (ignoring to prevent webhook retries)", externalID)
+			return nil
+		}
+		return fmt.Errorf("process disbursement webhook (%s, txn %q): %w", event, externalID, err)
 	}
 	return nil
 }

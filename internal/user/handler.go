@@ -1,303 +1,255 @@
 package user
 
 import (
-	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"time"
 
-	"project-tap/internal/middleware"
 	"project-tap/internal/pkg/cache"
+	"project-tap/internal/pkg/database"
 	jsonwrite "project-tap/internal/pkg/handler"
 )
 
-// Handler holds HTTP handlers and dependencies for the user package.
 type Handler struct {
+	Store database.Store
+	Tpl   *template.Template
 	svc   *Service
 	tpl   *template.Template
 	cache *cache.RedisCache
 }
 
-// NewHandler creates a new user HTTP handler.
 func NewHandler(svc *Service, tpl *template.Template, cache *cache.RedisCache) *Handler {
-	return &Handler{svc: svc, tpl: tpl, cache: cache}
+	return &Handler{Tpl: tpl, tpl: tpl, svc: svc, cache: cache}
 }
 
-// IsAuthorizedUser verifies that the request context JWT claims match the target username.
-func (h *Handler) IsAuthorizedUser(r *http.Request, targetUsername string) bool {
-	claims, ok := middleware.GetUserClaims(r)
-	if !ok || claims == nil {
-		log.Printf("[AUTH DENIED] No claims found in request context for target: %q", targetUsername)
-		return false
+func (h *Handler) getDashboardUserWithCache(r *http.Request, username string) (*DashboardUser, error) {
+	cacheKey := cache.UserDashboardKey(username)
+	var cached DashboardUser
+	if err := h.cache.GetJSON(cacheKey, &cached); err == nil {
+		return &cached, nil
 	}
-	return h.svc.IsUserAuthorized(r.Context(), claims.UserID, targetUsername, claims.Role == "super_admin")
+
+	user, err := h.svc.GetDashboardUser(r.Context(), username)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = h.cache.SetJSON(cacheKey, *user, cache.UserDashboardTTL())
+	return user, nil
 }
 
-// ---------------------------------------------------------------------------
-// HTML Views
-// ---------------------------------------------------------------------------
+// Dashboard
 
-// DashboardView renders the customer dashboard HTML template.
 func (h *Handler) DashboardView(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
 
-	user, err := h.getDashboardData(r.Context(), username)
+	user, err := h.getDashboardUserWithCache(r, username)
 	if err != nil {
+		log.Printf("DashboardView: failed for username %s: %v", username, err)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
-	h.renderTemplate(w, "dashboard.html", struct {
+	data := struct {
 		Username string
-		User     DashboardUser
+		User     *DashboardUser
 	}{
 		Username: username,
 		User:     user,
-	})
+	}
+
+	if err := h.Tpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
+		log.Println("DashboardView: error executing template:", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
 }
 
-// TransactionView renders the customer transaction history HTML template.
-func (h *Handler) TransactionView(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) DashboardUserHandler(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	if username == "" {
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "username is required"})
 		return
 	}
 
-	user, err := h.getDashboardData(r.Context(), username)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
+	dashboardUser, err := h.getDashboardUserWithCache(r, username)
+	switch {
+	case err == nil:
+		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
+			Success: true,
+			Message: "Dashboard data retrieved successfully",
+			Data:    dashboardUser,
+		})
+	case errors.Is(err, ErrUserNotFound):
 
-	h.renderTemplate(w, "transaction.html", struct {
-		Username string
-		User     DashboardUser
-	}{
-		Username: username,
-		User:     user,
-	})
+		jsonwrite.WriteJSON(w, http.StatusNotFound, jsonwrite.APIResponse{Success: false, Message: "User not found"})
+	default:
+		log.Printf("DashboardUserHandler: failed for username %s: %v", username, err)
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Error fetching dashboard data"})
+	}
 }
 
-// CardView renders the card management HTML template.
-func (h *Handler) CardView(w http.ResponseWriter, r *http.Request) {
-	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	user, err := h.getDashboardData(r.Context(), username)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	h.renderTemplate(w, "card.html", struct {
-		Username string
-		User     DashboardUser
-	}{
-		Username: username,
-		User:     user,
-	})
-}
-
-// ProfileView renders the customer profile HTML template.
 func (h *Handler) ProfileView(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
 
-	user, err := h.getDashboardData(r.Context(), username)
+	user, err := h.getDashboardUserWithCache(r, username)
 	if err != nil {
+		log.Printf("ProfileView: failed for username %s: %v", username, err)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
-	h.renderTemplate(w, "profile.html", struct {
+	data := struct {
 		Username string
-		User     DashboardUser
-	}{
-		Username: username,
-		User:     user,
-	})
+		User     *DashboardUser
+	}{Username: username, User: user}
+
+	if err := h.Tpl.ExecuteTemplate(w, "profile.html", data); err != nil {
+		log.Println("ProfileView: error executing template:", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
 }
 
-// TopUpView renders the customer top-up HTML template.
-func (h *Handler) TopUpView(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ProfileEdit(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+
+	var req ProfileUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Invalid request payload"})
 		return
 	}
 
-	user, err := h.getDashboardData(r.Context(), username)
+	result, err := h.svc.UpdateProfile(ctx, username, req)
+	switch {
+	case err == nil:
+		h.cache.InvalidateUser(username)
+		if req.Username != "" && req.Username != username {
+			h.cache.InvalidateUser(req.Username)
+		}
+		h.cache.InvalidateAdmin()
+		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: result.Message})
+	case errors.Is(err, ErrNoFieldsToUpdate):
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "At least one field is required"})
+	default:
+		log.Printf("ProfileEdit: failed for username %s: %v", username, err)
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to update profile"})
+	}
+}
+
+func (h *Handler) ProfileVerifyPassword(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	username := r.PathValue("username")
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Invalid request payload"})
+		return
+	}
+	if req.CurrentPassword == "" {
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Current password is required"})
+		return
+	}
+
+	_, err := h.svc.VerifyPassword(ctx, username, req.CurrentPassword)
+	switch {
+	case err == nil:
+		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Password verified"})
+	case errors.Is(err, ErrIncorrectPassword):
+		jsonwrite.WriteJSON(w, http.StatusUnauthorized, jsonwrite.APIResponse{Success: false, Message: "Current password is incorrect"})
+	default:
+		log.Printf("ProfileVerifyPassword: failed for username %s: %v", username, err)
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to verify current password"})
+	}
+}
+
+func (h *Handler) ProfileChangePassword(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	username := r.PathValue("username")
+
+	var req ProfileUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Invalid request payload"})
+		return
+	}
+
+	err := h.svc.ChangePassword(ctx, username, req)
+	switch {
+	case err == nil:
+		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Password updated successfully"})
+	case errors.Is(err, ErrMissingPasswordField):
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "All password fields are required"})
+	case errors.Is(err, ErrPasswordMismatch):
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Password do not match"})
+	case errors.Is(err, ErrIncorrectPassword):
+		jsonwrite.WriteJSON(w, http.StatusUnauthorized, jsonwrite.APIResponse{Success: false, Message: "Current password is incorrect"})
+	case errors.Is(err, ErrSamePassword):
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "New password must be different from current password"})
+	case errors.Is(err, ErrPasswordLookupFailed):
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to verify current password"})
+	default:
+		log.Printf("ProfileChangePassword: failed for username %s: %v", username, err)
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to update password"})
+	}
+}
+
+// Cards
+
+func (h *Handler) CardView(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+	user, err := h.getDashboardUserWithCache(r, username)
 	if err != nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
-	h.renderTemplate(w, "customer_topup.html", struct {
+	data := struct {
 		Username string
-		User     DashboardUser
-	}{
-		Username: username,
-		User:     user,
-	})
+		User     *DashboardUser
+	}{Username: username, User: user}
+
+	if err := h.Tpl.ExecuteTemplate(w, "card.html", data); err != nil {
+		log.Println("Cardview: error executing template:", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
 }
 
-// SettingsView renders the customer settings HTML template.
-func (h *Handler) SettingsView(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) UpdateUserCardStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
 
-	user, err := h.getDashboardData(r.Context(), username)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	h.renderTemplate(w, "settings.html", struct {
-		Username string
-		User     DashboardUser
-	}{
-		Username: username,
-		User:     user,
-	})
-}
-
-// ---------------------------------------------------------------------------
-// JSON REST Endpoints
-// ---------------------------------------------------------------------------
-
-// DashboardHandler returns user dashboard data as JSON with Redis caching.
-func (h *Handler) DashboardHandler(w http.ResponseWriter, r *http.Request) {
-	username := r.PathValue("username")
-	if username == "" {
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
-			Success: false,
-			Message: "user is required",
-		})
-		return
-	}
-
-	if !h.IsAuthorizedUser(r, username) {
-		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Forbidden: Insufficient permissions",
-		})
-		return
-	}
-
-	data, err := h.getDashboardData(r.Context(), username)
-	if err != nil {
-		jsonwrite.WriteJSON(w, http.StatusNotFound, jsonwrite.APIResponse{
-			Success: false,
-			Message: "User not found",
-		})
-		return
-	}
-
-	jsonwrite.WriteJSON(w, http.StatusOK, data)
-}
-
-// TransactionsJSONHandler returns the transactions history as JSON with Redis caching.
-func (h *Handler) TransactionsJSONHandler(w http.ResponseWriter, r *http.Request) {
-	username := r.PathValue("username")
-	if username == "" {
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Username is required",
-		})
-		return
-	}
-
-	if !h.IsAuthorizedUser(r, username) {
-		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Forbidden: Insufficient permissions",
-		})
-		return
-	}
-
-	cacheKey := cache.UserTransactionsKey(username)
-	var cached TransactionsListResponse
-	if err := h.cache.GetJSON(cacheKey, &cached); err == nil {
-		jsonwrite.WriteJSON(w, http.StatusOK, cached)
-		return
-	}
-
-	resp, err := h.svc.GetTransactions(r.Context(), username)
-	if err != nil {
-		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Error fetching transactions",
-		})
-		return
-	}
-
-	_ = h.cache.SetJSON(cacheKey, resp, 3*time.Minute)
-	jsonwrite.WriteJSON(w, http.StatusOK, resp)
-}
-
-// UpdateCardStatus updates the card status (active, inactive, blocked, lost).
-func (h *Handler) UpdateCardStatus(w http.ResponseWriter, r *http.Request) {
-	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		http.Error(w, "Forbidden: Insufficient permissions", http.StatusForbidden)
-		return
-	}
-
-	var req UpdateCardStatusRequest
+	var req Status
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	err := h.svc.UpdateCardStatus(r.Context(), username, req.Status)
+	err := h.svc.UpdateCardStatus(ctx, username, req.Status)
 	switch {
 	case err == nil:
 		h.cache.InvalidateUser(username)
 		h.cache.InvalidateAdmin()
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"success": true}`))
-	case errors.Is(err, ErrInvalidStatus):
+	case errors.Is(err, ErrInvalidCardStatus):
 		http.Error(w, "Invalid status", http.StatusBadRequest)
-	case errors.Is(err, ErrUserNotFound):
-		http.Error(w, "User not found", http.StatusNotFound)
 	default:
-		log.Printf("UpdateCardStatus error: %v", err)
+		log.Printf("UpdateCardStatus: failed for username %s: %v", username, err)
 		http.Error(w, "Failed to update card status", http.StatusInternalServerError)
 	}
 }
 
-// RequestReplacement blocks the existing card and deducts the replacement fee.
 func (h *Handler) RequestReplacement(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Forbidden: Insufficient permissions",
-		})
-		return
-	}
 
-	err := h.svc.RequestCardReplacement(r.Context(), username)
+	result, err := h.svc.RequestCardReplacement(ctx, username)
 	switch {
 	case err == nil:
 		h.cache.InvalidateUser(username)
@@ -305,6 +257,7 @@ func (h *Handler) RequestReplacement(w http.ResponseWriter, r *http.Request) {
 		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
 			Success: true,
 			Message: "Card replacement requested successfully. Card is now locked.",
+			Data:    map[string]any{"transaction_id": result.TransactionID},
 		})
 	case errors.Is(err, ErrUserNotFound):
 		jsonwrite.WriteJSON(w, http.StatusNotFound, jsonwrite.APIResponse{Success: false, Message: "User not found"})
@@ -313,214 +266,223 @@ func (h *Handler) RequestReplacement(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrInsufficientBalance):
 		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
 			Success: false,
-			Message: "Insufficient balance. Replacement fee is 150 PHP.",
+			Message: fmt.Sprintf("Insufficient balance. Replacement fee is %.2f PHP.", cardReplacementFee),
 		})
 	default:
-		log.Printf("RequestReplacement error: %v", err)
-		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to request replacement"})
+		log.Printf("RequestReplacement: failed for username %s: %v", username, err)
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to process card replacement"})
 	}
 }
 
-// ProfileEdit updates customer profile details.
-func (h *Handler) ProfileEdit(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) TopUpView(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Forbidden: Insufficient permissions",
-		})
-		return
-	}
 
-	var req ProfileUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Invalid request payload",
-		})
-		return
-	}
-
-	emailChanged, err := h.svc.UpdateProfile(r.Context(), username, req)
+	user, err := h.getDashboardUserWithCache(r, username)
 	if err != nil {
-		log.Printf("ProfileEdit error: %v", err)
-		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Failed to update profile",
-		})
+		log.Printf("TopUpView: failed for username %s: %v", username, err)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
-	h.cache.InvalidateUser(username)
-	if req.Username != "" && req.Username != username {
-		h.cache.InvalidateUser(req.Username)
-	}
-	h.cache.InvalidateAdmin()
+	data := struct {
+		Username string
+		User     *DashboardUser
+	}{Username: username, User: user}
 
-	msg := "Profile updated successfully"
-	if emailChanged {
-		msg = "Profile updated. Please check your current email to approve the change."
-	}
-
-	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
-		Success: true,
-		Message: msg,
-	})
-}
-
-// ProfileVerifyPassword checks the current user password.
-func (h *Handler) ProfileVerifyPassword(w http.ResponseWriter, r *http.Request) {
-	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Forbidden: Insufficient permissions",
-		})
-		return
-	}
-
-	var req VerifyPasswordRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Invalid request payload",
-		})
-		return
-	}
-
-	if req.CurrentPassword == "" {
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Current password is required",
-		})
-		return
-	}
-
-	err := h.svc.VerifyCurrentPassword(r.Context(), username, req.CurrentPassword)
-	switch {
-	case err == nil:
-		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Password verified"})
-	case errors.Is(err, ErrIncorrectPassword):
-		jsonwrite.WriteJSON(w, http.StatusUnauthorized, jsonwrite.APIResponse{Success: false, Message: "Current password is incorrect"})
-	default:
-		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to verify password"})
+	if err := h.Tpl.ExecuteTemplate(w, "customer_topup.html", data); err != nil {
+		log.Println("TopUpView: error executing template:", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }
 
-// ProfileChangePassword updates user password after validating old password.
-func (h *Handler) ProfileChangePassword(w http.ResponseWriter, r *http.Request) {
-	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Forbidden: Insufficient permissions",
-		})
-		return
-	}
-
-	var req ProfileUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Invalid request payload",
-		})
-		return
-	}
-
-	err := h.svc.ChangePassword(r.Context(), username, req.CurrentPassword, req.NewPassword, req.ConfirmPassword)
-	switch {
-	case err == nil:
-		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Password updated successfully"})
-	case errors.Is(err, ErrIncorrectPassword):
-		jsonwrite.WriteJSON(w, http.StatusUnauthorized, jsonwrite.APIResponse{Success: false, Message: "Current password is incorrect"})
-	case errors.Is(err, ErrSamePassword):
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "New password must be different from current password"})
-	default:
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: err.Error()})
-	}
-}
-
-// VerifyEmail verifies an email token and redirects to the profile page.
-func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		http.Error(w, "Token is required", http.StatusBadRequest)
-		return
-	}
-
-	username, err := h.svc.VerifyEmail(r.Context(), token)
-	if err != nil {
-		http.Error(w, "Invalid or expired token", http.StatusBadRequest)
-		return
-	}
-
-	h.cache.InvalidateUser(username)
-	http.Redirect(w, r, "/u/"+username+"?verified=true", http.StatusSeeOther)
-}
-
-// CreateXenditInvoice creates a Xendit checkout session for card topup.
 func (h *Handler) CreateXenditInvoice(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	username := r.PathValue("username")
-	if !h.IsAuthorizedUser(r, username) {
-		jsonwrite.WriteJSON(w, http.StatusForbidden, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Forbidden: Insufficient permissions",
-		})
-		return
-	}
 
 	var req TopUpRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
-			Success: false,
-			Message: "Invalid request payload",
-		})
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Invalid request payload"})
 		return
 	}
 
-	checkoutURL, err := h.svc.CreateTopUpSession(r.Context(), username, req)
-	if err != nil {
-		log.Printf("CreateXenditInvoice error: %v", err)
-		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{
-			Success: false,
-			Message: err.Error(),
-		})
-		return
+	domain := "http://" + os.Getenv("SERVER_PORT") + ":" + os.Getenv("PORT")
+	if domain == "http://" {
+		domain = "http://127.0.0.1:3000"
 	}
 
-	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
-		Success: true,
-		Message: "Checkout session created successfully",
-		Data:    map[string]string{"url": checkoutURL},
-	})
+	url, err := h.svc.CreateTopUpInvoice(ctx, username, req, domain)
+	switch {
+	case err == nil:
+		jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{
+			Success: true, Message: "Checkout session created successfully",
+			Data: map[string]string{"url": url},
+		})
+	case errors.Is(err, ErrTopUpTooLow):
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Amount must be at least 50.00"})
+	case errors.Is(err, ErrTopUpTooHigh):
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Amount cannot exceed 2,000.00"})
+	case errors.Is(err, ErrUnsupportedPaymentMethod):
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "QR Ph is temporarily unavailable. Please choose GCash, Maya, or GrabPay."})
+	case errors.Is(err, ErrCardNotFound):
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to find card for user"})
+	default:
+		log.Printf("CreateXenditInvoice: failed for username %s: %v", username, err)
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to create checkout session"})
+	}
 }
 
-// XenditWebhook receives payment notification webhooks from Xendit.
+// SaveTopUpToDatabase finalizes a top-up. This must only be called by a
+// trusted, signature-verified caller (e.g. the Xendit invoice webhook) —
+// never directly from client-facing input.
+func (h *Handler) SaveTopUpToDatabase(w http.ResponseWriter, r *http.Request) {
+	callbackToken := r.Header.Get("x-callback-token")
+	xenditToken := os.Getenv("XENDIT_WEBHOOK_KEY")
+	if xenditToken != "" && callbackToken != xenditToken {
+		log.Println("Invalid x-callback-token for topup")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	ctx := r.Context()
+
+	var req TopUpRecord
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Invalid request payload"})
+		return
+	}
+
+	if err := h.svc.CompleteTopUp(ctx, req); err != nil {
+		if errors.Is(err, ErrCardNotFound) {
+			jsonwrite.WriteJSON(w, http.StatusNotFound, jsonwrite.APIResponse{Success: false, Message: "Card not found"})
+			return
+		}
+		log.Printf("SaveTopUpToDatabase: failed for card %s: %v", req.CardNumber, err)
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to process top-up"})
+		return
+	}
+
+	if uname, err := h.svc.GetUsernameByCardNumber(ctx, req.CardNumber); err == nil && uname != "" {
+		h.cache.InvalidateUser(uname)
+	}
+	h.cache.InvalidateAdmin()
+
+	jsonwrite.WriteJSON(w, http.StatusOK, jsonwrite.APIResponse{Success: true, Message: "Top-up fully processed and saved"})
+}
+
+func (h *Handler) SettingsView(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+
+	user, err := h.getDashboardUserWithCache(r, username)
+	if err != nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	data := struct {
+		Username string
+		User     *DashboardUser
+	}{
+		Username: username,
+		User:     user,
+	}
+
+	if err := h.Tpl.ExecuteTemplate(w, "settings.html", data); err != nil {
+		log.Println("TopUpView: error executing template:", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
+
+}
+
+func (h *Handler) TransactionView(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+
+	user, err := h.getDashboardUserWithCache(r, username)
+	if err != nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	data := struct {
+		Username string
+		User     *DashboardUser
+	}{
+		Username: username,
+		User:     user,
+	}
+
+	if err := h.Tpl.ExecuteTemplate(w, "transaction.html", data); err != nil {
+		log.Println("SettingView: error executing template:", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
+}
+
+func (h *Handler) TransactionsJSONHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	username := r.PathValue("username")
+	if username == "" {
+		jsonwrite.WriteJSON(w, http.StatusBadRequest, jsonwrite.APIResponse{Success: false, Message: "Username is required"})
+		return
+	}
+
+	cacheKey := cache.UserTransactionsKey(username)
+	var cached []TxnResponse
+	if err := h.cache.GetJSON(cacheKey, &cached); err == nil {
+		jsonwrite.WriteJSON(w, http.StatusOK, struct {
+			Success      bool          `json:"success"`
+			Transactions []TxnResponse `json:"transactions"`
+		}{
+			Success:      true,
+			Transactions: cached,
+		})
+		return
+	}
+
+	transactions, err := h.svc.GetUserTransactions(ctx, username)
+	if err != nil {
+		log.Printf("TransactionsJSONHandler: failed for username %s: %v", username, err)
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{Success: false, Message: "Failed to fetch transactions"})
+		return
+	}
+
+	_ = h.cache.SetJSON(cacheKey, transactions, cache.UserTransactionsTTL())
+
+	response := struct {
+		Success      bool          `json:"success"`
+		Transactions []TxnResponse `json:"transactions"`
+	}{
+		Success:      true,
+		Transactions: transactions,
+	}
+
+	jsonwrite.WriteJSON(w, http.StatusOK, response)
+}
+
 func (h *Handler) XenditWebhook(w http.ResponseWriter, r *http.Request) {
 	xenditToken := os.Getenv("XENDIT_WEBHOOK_KEY")
 	callbackToken := r.Header.Get("x-callback-token")
-
-	if xenditToken == "" || subtle.ConstantTimeCompare([]byte(callbackToken), []byte(xenditToken)) != 1 {
-		log.Println("Invalid x-callback-token or missing XENDIT_WEBHOOK_KEY")
+	if xenditToken != "" && callbackToken != xenditToken {
+		log.Println("Invalid x-callback-token")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		log.Println("Failed to read body")
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
 	var payload XenditWebhookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
+		log.Println("Failed to parse webhook JSON:", err)
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
-	username, err := h.svc.ProcessXenditWebhook(r.Context(), payload)
+	username, err := h.svc.ProcessTopUpWebhook(r.Context(), payload)
 	if err != nil {
-		log.Printf("XenditWebhook process error: %v", err)
+		log.Printf("XenditWebhook: failed to process %s (status %s): %v", payload.ExternalID, payload.Status, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -530,32 +492,39 @@ func (h *Handler) XenditWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	h.cache.InvalidateAdmin()
 
+	// Always 200 OK to Xendit
 	w.WriteHeader(http.StatusOK)
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-func (h *Handler) getDashboardData(ctx context.Context, username string) (DashboardUser, error) {
-	cacheKey := cache.UserDashboardKey(username)
-	var cached DashboardUser
-	if err := h.cache.GetJSON(cacheKey, &cached); err == nil {
-		return cached, nil
+func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "Token is required", http.StatusBadRequest)
+		return
 	}
 
-	user, err := h.svc.GetDashboard(ctx, username)
-	if err != nil {
-		return DashboardUser{}, err
+	username, err := h.svc.VerifyEmail(r.Context(), token)
+	switch {
+	case err == nil:
+		h.cache.InvalidateUser(username)
+		http.Redirect(w, r, "/u/"+username+"?verified=true", http.StatusSeeOther)
+	case errors.Is(err, ErrInvalidToken):
+		http.Error(w, "Invalid or expired token", http.StatusBadRequest)
+	case errors.Is(err, ErrNoPendingEmail):
+		http.Error(w, "No pending email to verify", http.StatusBadRequest)
+	default:
+		log.Printf("VerifyEmail: failed for token: %v", err)
+		http.Error(w, "Failed to verify email", http.StatusInternalServerError)
 	}
-
-	_ = h.cache.SetJSON(cacheKey, user, 5*time.Minute)
-	return user, nil
 }
+
+// Helper
 
 func (h *Handler) renderTemplate(w http.ResponseWriter, name string, data any) {
 	if err := h.tpl.ExecuteTemplate(w, name, data); err != nil {
 		log.Printf("renderTemplate %s: %v", name, err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		jsonwrite.WriteJSON(w, http.StatusInternalServerError, jsonwrite.APIResponse{
+			Success: false, Message: "Internal Server Error",
+		})
 	}
 }

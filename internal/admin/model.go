@@ -2,6 +2,7 @@ package admin
 
 import (
 	"database/sql"
+	"html/template"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -46,10 +47,25 @@ type PaginatedMerchantsResult struct {
 	Limit      int                `json:"limit"`
 }
 
-// SimMerchant is a lightweight representation of a merchant, often used in dropdowns or simple lists.
+// SimTerminal represents an active terminal for simulator testing.
+type SimTerminal struct {
+	TerminalID      string `json:"terminal_id"`
+	TerminalSN      string `json:"terminal_sn"`
+	DeviceName      string `json:"device_name"`
+	LocationDetails string `json:"location_details"`
+}
+
+// SimMerchant is a lightweight representation of a merchant, including their active terminals.
 type SimMerchant struct {
-	ID   string `db:"merchant_id"`
-	Name string `db:"business_name"`
+	ID        string        `json:"id" db:"merchant_id"`
+	Name      string        `json:"name" db:"business_name"`
+	Terminals []SimTerminal `json:"terminals"`
+}
+
+// TerminalSimPageData holds data passed to the terminal_sim.html view.
+type TerminalSimPageData struct {
+	Merchants     []SimMerchant
+	MerchantsJSON template.JS
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +111,21 @@ type TerminalRequestsResult struct {
 	TotalItems  int
 	CurrentPage int
 	TotalPages  int
+}
+
+// TerminalAssignmentLog records an audit snapshot of terminal custody changes.
+type TerminalAssignmentLog struct {
+	ID              int64     `json:"id" db:"id"`
+	TerminalID      string    `json:"terminal_id" db:"terminal_id"`
+	TerminalSN      string    `json:"terminal_sn" db:"terminal_sn"`
+	MerchantID      string    `json:"merchant_id" db:"merchant_id"`
+	BusinessName    string    `json:"business_name,omitempty" db:"business_name"`
+	Action          string    `json:"action" db:"action"`
+	DeviceName      string    `json:"device_name" db:"device_name"`
+	LocationDetails string    `json:"location_details" db:"location_details"`
+	PerformedBy     string    `json:"performed_by" db:"performed_by"`
+	Notes           string    `json:"notes" db:"notes"`
+	CreatedAt       time.Time `json:"created_at" db:"created_at"`
 }
 
 // ---------------------------------------------------------------------------

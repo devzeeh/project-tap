@@ -25,9 +25,33 @@ type Service struct {
 	repo *Repository
 }
 
+// ensureTerminalLogsTable verifies that the terminal_assignment_logs table exists.
+func (s *Service) ensureTerminalLogsTable() error {
+	query := `CREATE TABLE IF NOT EXISTS terminal_assignment_logs (
+		id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		terminal_id VARCHAR(50) NOT NULL,
+		terminal_sn VARCHAR(50) NOT NULL,
+		merchant_id VARCHAR(50) NOT NULL,
+		action ENUM('assigned','unassigned','merchant_deleted','maintenance') NOT NULL,
+		device_name VARCHAR(100) DEFAULT NULL,
+		location_details VARCHAR(255) DEFAULT NULL,
+		performed_by VARCHAR(50) DEFAULT NULL,
+		notes VARCHAR(255) DEFAULT NULL,
+		created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+		KEY idx_terminal_sn (terminal_sn),
+		KEY idx_terminal_id (terminal_id),
+		KEY idx_merchant_id (merchant_id),
+		KEY idx_performed_by (performed_by)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
+	_, err := s.repo.store.Exec(query)
+	return err
+}
+
 // NewService creates a new admin Service with the required dependencies.
 func NewService(repo *Repository) *Service {
-	return &Service{repo: repo}
+	svc := &Service{repo: repo}
+	_ = svc.ensureTerminalLogsTable()
+	return svc
 }
 
 // ---------------------------------------------------------------------------
@@ -39,11 +63,38 @@ func (s *Service) GetDashboardData() (structs.AdminDashboardData, error) {
 	store := s.repo.store
 	var data structs.AdminDashboardData
 
-	if err := store.QueryRow(`SELECT COALESCE(SUM(service_fee), 0.00) FROM transactions WHERE transaction_type IN ('payment', 'topup', 'withdrawal')`).Scan(&data.GrossRevenue); err != nil {
-		return data, fmt.Errorf("gross revenue: %w", err)
+	// Gross Volume (TPV): Total face value of all incoming cash flow across the platform.
+	// Includes all completed customer top-ups (loaded balance + top-up fee), payment transactions, and withdrawals,
+	// minus completed refunds and reversals.
+	var grossVolume decimal.Decimal
+	err := store.QueryRow(`
+		SELECT COALESCE(SUM(
+			CASE 
+				WHEN transaction_type = 'topup' AND status = 'completed' THEN (amount + COALESCE(service_fee, 0.00))
+				WHEN transaction_type IN ('payment', 'withdrawal') AND status = 'completed' THEN amount
+				WHEN transaction_type IN ('refund', 'reversal') AND status IN ('completed', 'refunded') THEN -amount
+				ELSE 0.00 
+			END
+		), 0.00) 
+		FROM transactions`).Scan(&grossVolume)
+	if err != nil {
+		return data, fmt.Errorf("gross volume: %w", err)
 	}
+	data.GrossRevenue = grossVolume
+	data.GrossVolume = grossVolume
 
-	if err := store.QueryRow(`SELECT COALESCE(SUM(CASE WHEN transaction_type IN ('payment','topup','withdrawal') THEN service_fee WHEN transaction_type IN ('refund','reversal') THEN -service_fee ELSE 0 END), 0.00) FROM transactions`).Scan(&data.NetRevenue); err != nil {
+	// Net Revenue (Platform Take): Actual platform fee earnings collected by UniCard.
+	// Includes all convenience fees and merchant commission slices, minus refunded/reversed fees.
+	err = store.QueryRow(`
+		SELECT COALESCE(SUM(
+			CASE 
+				WHEN transaction_type IN ('payment', 'topup', 'withdrawal') AND status = 'completed' THEN service_fee 
+				WHEN transaction_type IN ('refund', 'reversal') AND status IN ('completed', 'refunded') THEN -service_fee 
+				ELSE 0.00 
+			END
+		), 0.00) 
+		FROM transactions`).Scan(&data.NetRevenue)
+	if err != nil {
 		return data, fmt.Errorf("net revenue: %w", err)
 	}
 
@@ -334,6 +385,13 @@ func (s *Service) ApproveMerchant(ctx context.Context, merchantID, adminUsername
 		return fmt.Errorf("assign terminal: %w", err)
 	}
 
+	var termID string
+	_ = tx.QueryRow("SELECT terminal_id FROM terminals WHERE terminal_sn=?", assignSN).Scan(&termID)
+	_, _ = tx.Exec(`INSERT INTO terminal_assignment_logs 
+		(terminal_id, terminal_sn, merchant_id, action, device_name, location_details, performed_by, notes) 
+		VALUES (?, ?, ?, 'assigned', ?, ?, ?, ?)`,
+		termID, assignSN, merchantID, deviceName, businessAddress, adminUserID, "Assigned upon merchant onboarding approval")
+
 	if requestID != "" {
 		_, _ = tx.Exec("UPDATE terminal_requests SET status='approved', handled_by=?, handled_at=CURRENT_TIMESTAMP WHERE request_id=?", adminUserID, requestID)
 	}
@@ -417,8 +475,9 @@ func (s *Service) SuspendMerchant(merchantID string, req SuspendMerchantRequest)
 	return nil
 }
 
-// DeleteMerchant permanently removes a merchant profile and unassigns any linked terminals.
-func (s *Service) DeleteMerchant(merchantID string) error {
+// DeleteMerchant permanently removes a merchant profile and unassigns any linked terminals with custody audit logging.
+func (s *Service) DeleteMerchant(merchantID, adminUsername string) error {
+	_ = s.ensureTerminalLogsTable()
 	store := s.repo.store
 	tx, err := store.Begin()
 	if err != nil {
@@ -429,6 +488,50 @@ func (s *Service) DeleteMerchant(merchantID string) error {
 	var merchantUserID, ownerName, merchantEmail string
 	if err := tx.QueryRow("SELECT user_id, owner_name, business_email FROM merchants WHERE merchant_id=?", merchantID).Scan(&merchantUserID, &ownerName, &merchantEmail); err != nil {
 		return errors.New("merchant not found")
+	}
+
+	var adminUserID sql.NullString
+	if adminUsername != "" {
+		_ = tx.QueryRow("SELECT user_id FROM users WHERE username=?", adminUsername).Scan(&adminUserID)
+	}
+
+	// 1. Fetch all terminals currently assigned to this merchant
+	rows, err := tx.Query("SELECT terminal_id, terminal_sn, device_name, location_details FROM terminals WHERE merchant_id=?", merchantID)
+	if err != nil {
+		return fmt.Errorf("query terminals for unassignment: %w", err)
+	}
+	type termSnapshot struct {
+		terminalID, terminalSN, deviceName string
+		locationDetails                    sql.NullString
+	}
+	var assignedTerminals []termSnapshot
+	for rows.Next() {
+		var t termSnapshot
+		if err := rows.Scan(&t.terminalID, &t.terminalSN, &t.deviceName, &t.locationDetails); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan terminal snapshot: %w", err)
+		}
+		assignedTerminals = append(assignedTerminals, t)
+	}
+	rows.Close()
+
+	// 2. Insert custody audit logs for each unassigned terminal
+	for _, t := range assignedTerminals {
+		var loc string
+		if t.locationDetails.Valid {
+			loc = t.locationDetails.String
+		}
+		var performedBy *string
+		if adminUserID.Valid && adminUserID.String != "" {
+			performedBy = &adminUserID.String
+		}
+		_, err = tx.Exec(`INSERT INTO terminal_assignment_logs 
+			(terminal_id, terminal_sn, merchant_id, action, device_name, location_details, performed_by, notes) 
+			VALUES (?, ?, ?, 'merchant_deleted', ?, ?, ?, ?)`,
+			t.terminalID, t.terminalSN, merchantID, t.deviceName, loc, performedBy, "Merchant profile deleted by admin; terminal unassigned")
+		if err != nil {
+			return fmt.Errorf("log terminal unassignment: %w", err)
+		}
 	}
 
 	if _, err = tx.Exec("UPDATE terminals SET merchant_id=NULL, location_details='', status='inactive' WHERE merchant_id=?", merchantID); err != nil {
@@ -450,9 +553,11 @@ func (s *Service) DeleteMerchant(merchantID string) error {
 }
 
 // ApproveMerchantDocuments marks a merchant's uploaded verification documents as approved.
-func (s *Service) ApproveMerchantDocuments(merchantID string) error {
+func (s *Service) ApproveMerchantDocuments(merchantID string) (string, error) {
+	var username string
+	_ = s.repo.store.QueryRow(`SELECT u.username FROM merchants m JOIN users u ON m.user_id = u.user_id WHERE m.merchant_id = ?`, merchantID).Scan(&username)
 	_, err := s.repo.store.Exec("UPDATE merchants SET document_status='approved', message='Your newly uploaded documents have been approved.' WHERE merchant_id=?", merchantID)
-	return err
+	return username, err
 }
 
 // AddMerchants processes a batch onboarding request for multiple new merchants.
@@ -478,7 +583,7 @@ func (s *Service) AddMerchants(ctx context.Context, reqs []AddMerchantRequest) e
 	}
 	defer merchStmt.Close()
 
-	termStmt, err := tx.Prepare(`UPDATE terminals SET merchant_id=?, location_details=?, status='active' WHERE terminal_sn=?`)
+	termStmt, err := tx.Prepare(`UPDATE terminals SET merchant_id=?, device_name=COALESCE(NULLIF(?, ''), device_name), location_details=?, status='active' WHERE terminal_sn=?`)
 	if err != nil {
 		return fmt.Errorf("prepare terminal stmt: %w", err)
 	}
@@ -521,9 +626,16 @@ func (s *Service) AddMerchants(ctx context.Context, reqs []AddMerchantRequest) e
 			return fmt.Errorf("merchant #%d: create merchant profile: %w", i+1, err)
 		}
 
-		if _, err = termStmt.Exec(userID, req.BusinessAddress, req.TerminalSN); err != nil {
+		if _, err = termStmt.Exec(merchantID, req.DeviceName, req.BusinessAddress, req.TerminalSN); err != nil {
 			return fmt.Errorf("merchant #%d: register terminal: %w", i+1, err)
 		}
+
+		var termID string
+		_ = tx.QueryRow("SELECT terminal_id FROM terminals WHERE terminal_sn=?", req.TerminalSN).Scan(&termID)
+		_, _ = tx.Exec(`INSERT INTO terminal_assignment_logs 
+			(terminal_id, terminal_sn, merchant_id, action, device_name, location_details, performed_by, notes) 
+			VALUES (?, ?, ?, 'assigned', ?, ?, ?, ?)`,
+			termID, req.TerminalSN, merchantID, req.DeviceName, req.BusinessAddress, "super_admin", "Assigned during merchant manual onboarding")
 	}
 
 	return tx.Commit()
@@ -630,6 +742,51 @@ func (s *Service) GetUnassignedTerminals() ([]UnassignedTerminalData, error) {
 		terminals = append(terminals, t)
 	}
 	return terminals, nil
+}
+
+// GetTerminalLogs retrieves the custody and assignment audit history for a specific terminal.
+func (s *Service) GetTerminalLogs(identifier string) ([]TerminalAssignmentLog, error) {
+	_ = s.ensureTerminalLogsTable()
+	query := `
+		SELECT l.id, l.terminal_id, l.terminal_sn, l.merchant_id, COALESCE(m.business_name, ''),
+		       l.action, COALESCE(l.device_name, ''), COALESCE(l.location_details, ''),
+		       COALESCE(l.performed_by, ''), COALESCE(l.notes, ''), l.created_at
+		FROM terminal_assignment_logs l
+		LEFT JOIN merchants m ON l.merchant_id = m.merchant_id
+		WHERE l.terminal_sn = ? OR l.terminal_id = ?
+		ORDER BY l.created_at DESC, l.id DESC
+	`
+	rows, err := s.repo.store.Query(query, identifier, identifier)
+	if err != nil {
+		return nil, fmt.Errorf("query terminal logs: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []TerminalAssignmentLog
+	for rows.Next() {
+		var logEntry TerminalAssignmentLog
+		if err := rows.Scan(
+			&logEntry.ID,
+			&logEntry.TerminalID,
+			&logEntry.TerminalSN,
+			&logEntry.MerchantID,
+			&logEntry.BusinessName,
+			&logEntry.Action,
+			&logEntry.DeviceName,
+			&logEntry.LocationDetails,
+			&logEntry.PerformedBy,
+			&logEntry.Notes,
+			&logEntry.CreatedAt,
+		); err != nil {
+			log.Printf("GetTerminalLogs scan: %v", err)
+			continue
+		}
+		logs = append(logs, logEntry)
+	}
+	if logs == nil {
+		logs = []TerminalAssignmentLog{}
+	}
+	return logs, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -770,6 +927,12 @@ func (s *Service) ApproveTerminalRequest(requestID, adminUserID string, payload 
 		if _, err = tx.Exec(`UPDATE terminals SET merchant_id=?, location_details=?, status='active' WHERE terminal_sn=?`, merchantID, loc, assignSN); err != nil {
 			return fmt.Errorf("assign terminal: %w", err)
 		}
+		var termID, devName string
+		_ = tx.QueryRow("SELECT terminal_id, device_name FROM terminals WHERE terminal_sn=?", assignSN).Scan(&termID, &devName)
+		_, _ = tx.Exec(`INSERT INTO terminal_assignment_logs 
+			(terminal_id, terminal_sn, merchant_id, action, device_name, location_details, performed_by, notes) 
+			VALUES (?, ?, ?, 'assigned', ?, ?, ?, ?)`,
+			termID, assignSN, merchantID, devName, loc, adminUserID, "Assigned via hardware terminal request")
 	}
 
 	return tx.Commit()
@@ -920,7 +1083,9 @@ func (s *Service) GetAllTransactions() ([]TxnRow, error) {
 	for rows.Next() {
 		var t TxnRow
 		var cardNumber *string
-		if err := rows.Scan(&t.TransactionID, &t.TerminalID, &t.Date, &t.Time, &t.Type, &t.Amount, &t.Status, &t.Description, &t.MerchantName, &t.MerchantID, &t.PointsEarned, &cardNumber, &t.CustomerName, &t.ServiceFee); err != nil {
+		if err := rows.Scan(&t.TransactionID, &t.TerminalID, &t.Date, &t.Time, &t.Type,
+			&t.Amount, &t.Status, &t.Description, &t.MerchantName, &t.MerchantID,
+			&t.PointsEarned, &cardNumber, &t.CustomerName, &t.ServiceFee); err != nil {
 			log.Printf("GetAllTransactions: scan: %v", err)
 			continue
 		}
@@ -1022,20 +1187,57 @@ func (s *Service) GetXenditTransactions() ([]XenditTxnRow, error) {
 // Terminal simulation
 // ---------------------------------------------------------------------------
 
-// GetSimMerchants retrieves a lightweight list of merchants for the transaction simulator.
+// GetSimMerchants retrieves active merchants and their active assigned terminals for the transaction simulator.
+// Terminals or merchants that are inactive, suspended, blocked, or removed are strictly excluded.
 func (s *Service) GetSimMerchants() []SimMerchant {
-	rows, err := s.repo.store.Query("SELECT merchant_id, business_name FROM merchants")
+	query := `
+		SELECT m.merchant_id, m.business_name,
+		       t.terminal_id, t.terminal_sn, t.device_name, COALESCE(t.location_details, '')
+		FROM merchants m
+		JOIN terminals t ON m.merchant_id = t.merchant_id
+		WHERE t.status = 'active'
+		  AND m.status IN ('active', 'approved')
+		ORDER BY m.business_name ASC, t.device_name ASC
+	`
+	rows, err := s.repo.store.Query(query)
 	if err != nil {
-		return nil
+		log.Printf("GetSimMerchants query: %v", err)
+		return []SimMerchant{}
 	}
 	defer rows.Close()
 
-	var merchants []SimMerchant
+	merchantMap := make(map[string]*SimMerchant)
+	var order []string
+
 	for rows.Next() {
-		var m SimMerchant
-		if err := rows.Scan(&m.ID, &m.Name); err == nil {
-			merchants = append(merchants, m)
+		var mID, mName, tID, tSN, tDev, tLoc string
+		if err := rows.Scan(&mID, &mName, &tID, &tSN, &tDev, &tLoc); err != nil {
+			log.Printf("GetSimMerchants scan: %v", err)
+			continue
 		}
+
+		merch, exists := merchantMap[mID]
+		if !exists {
+			merch = &SimMerchant{
+				ID:        mID,
+				Name:      mName,
+				Terminals: []SimTerminal{},
+			}
+			merchantMap[mID] = merch
+			order = append(order, mID)
+		}
+
+		merch.Terminals = append(merch.Terminals, SimTerminal{
+			TerminalID:      tID,
+			TerminalSN:      tSN,
+			DeviceName:      tDev,
+			LocationDetails: tLoc,
+		})
+	}
+
+	merchants := make([]SimMerchant, 0, len(order))
+	for _, id := range order {
+		merchants = append(merchants, *merchantMap[id])
 	}
 	return merchants
 }
@@ -1044,28 +1246,87 @@ func (s *Service) GetSimMerchants() []SimMerchant {
 func (s *Service) SimTransaction(req SimRequest) (decimal.Decimal, error) {
 	store := s.repo.store
 
-	var balance decimal.Decimal
-	var status string
-	var userID *string
-	if err := store.QueryRow(`SELECT balance, status, user_id FROM cards WHERE card_number=?`, req.CardNumber).Scan(&balance, &status, &userID); err != nil {
+	req.CardNumber = strings.TrimSpace(req.CardNumber)
+	req.TerminalID = strings.TrimSpace(req.TerminalID)
+	req.MerchantID = strings.TrimSpace(req.MerchantID)
+
+	if req.CardNumber == "" {
+		return decimal.Zero, errors.New("Card number or RFID UID is required.")
+	}
+	if req.TerminalID == "" {
+		return decimal.Zero, errors.New("Please select an active terminal to proceed.")
+	}
+	if req.MerchantID == "" {
+		return decimal.Zero, errors.New("Please select an active merchant.")
+	}
+	if req.Amount.LessThanOrEqual(decimal.Zero) {
+		return decimal.Zero, errors.New("Transaction amount must be greater than ₱0.00.")
+	}
+
+	// 1. Validate Terminal (must be active and assigned to the selected merchant)
+	var termStatus, termMerchantID, termDeviceName string
+	err := store.QueryRow(`SELECT status, merchant_id, device_name FROM terminals WHERE terminal_id = ? OR terminal_sn = ?`, req.TerminalID, req.TerminalID).
+		Scan(&termStatus, &termMerchantID, &termDeviceName)
+	if err != nil {
 		if err == sql.ErrNoRows {
-			return decimal.Zero, errors.New("card not found")
+			return decimal.Zero, errors.New("Selected terminal does not exist or has been removed.")
+		}
+		return decimal.Zero, fmt.Errorf("query terminal: %w", err)
+	}
+	if termStatus != "active" {
+		return decimal.Zero, fmt.Errorf("Selected terminal '%s' is %s and cannot process payments.", termDeviceName, termStatus)
+	}
+	if termMerchantID != req.MerchantID {
+		return decimal.Zero, errors.New("Selected terminal is not assigned to the chosen merchant.")
+	}
+
+	// 2. Validate Merchant (must be active or approved)
+	var merchStatus, merchName string
+	var commissionRate decimal.Decimal
+	err = store.QueryRow(`SELECT status, business_name, commission_rate FROM merchants WHERE merchant_id = ?`, req.MerchantID).
+		Scan(&merchStatus, &merchName, &commissionRate)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return decimal.Zero, errors.New("Selected merchant not found.")
+		}
+		return decimal.Zero, fmt.Errorf("query merchant: %w", err)
+	}
+	if merchStatus != "active" && merchStatus != "approved" {
+		return decimal.Zero, fmt.Errorf("Merchant '%s' is %s and cannot accept payments.", merchName, merchStatus)
+	}
+
+	// 3. Validate Card (lookup by card_number OR card_uid)
+	var actualCardNumber string
+	var balance decimal.Decimal
+	var cardStatus string
+	var cardUserID *string
+	err = store.QueryRow(`SELECT card_number, balance, status, user_id FROM cards WHERE card_number = ? OR card_uid = ?`, req.CardNumber, req.CardNumber).
+		Scan(&actualCardNumber, &balance, &cardStatus, &cardUserID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return decimal.Zero, errors.New("Card not found. Please verify the card number or RFID UID.")
 		}
 		return decimal.Zero, fmt.Errorf("query card: %w", err)
 	}
-	if status != "active" {
-		return decimal.Zero, errors.New("card is not active")
+	switch cardStatus {
+	case "blocked":
+		return decimal.Zero, errors.New("Card is blocked. Transactions are denied.")
+	case "lost":
+		return decimal.Zero, errors.New("Card is reported lost and deactivated.")
+	case "inactive":
+		return decimal.Zero, errors.New("Card is inactive. Please activate your card before tapping.")
+	default:
+		if cardStatus != "active" {
+			return decimal.Zero, fmt.Errorf("Card status is %s.", cardStatus)
+		}
 	}
-	if userID == nil || *userID == "" {
-		return decimal.Zero, errors.New("card is not linked to any user")
-	}
-	if req.Type != "Refund" && balance.LessThan(req.Amount) {
-		return decimal.Zero, errors.New("insufficient balance")
+	if cardUserID == nil || *cardUserID == "" {
+		return decimal.Zero, errors.New("Card is not linked to any registered user account.")
 	}
 
-	var commissionRate decimal.Decimal
-	if err := store.QueryRow("SELECT commission_rate FROM merchants WHERE merchant_id=?", req.MerchantID).Scan(&commissionRate); err != nil {
-		commissionRate = decimal.NewFromFloat(2)
+	// 4. Validate Balance
+	if req.Type != "Refund" && balance.LessThan(req.Amount) {
+		return decimal.Zero, fmt.Errorf("Insufficient balance. Available card balance is ₱%s, but required amount is ₱%s.", balance.StringFixed(2), req.Amount.StringFixed(2))
 	}
 
 	serviceFee := req.Amount.Mul(commissionRate.Div(decimal.NewFromFloat(100)))
@@ -1078,9 +1339,9 @@ func (s *Service) SimTransaction(req SimRequest) (decimal.Decimal, error) {
 	defer tx.Rollback()
 
 	if req.Type == "Refund" {
-		_, err = tx.Exec(`UPDATE cards SET balance=balance+?, loyalty_points=loyalty_points-? WHERE card_number=?`, req.Amount, loyaltyPoints, req.CardNumber)
+		_, err = tx.Exec(`UPDATE cards SET balance = balance + ?, loyalty_points = GREATEST(0, loyalty_points - ?) WHERE card_number = ?`, req.Amount, loyaltyPoints, actualCardNumber)
 	} else {
-		_, err = tx.Exec(`UPDATE cards SET balance=balance-?, loyalty_points=loyalty_points+? WHERE card_number=?`, req.Amount, loyaltyPoints, req.CardNumber)
+		_, err = tx.Exec(`UPDATE cards SET balance = balance - ?, loyalty_points = loyalty_points + ? WHERE card_number = ?`, req.Amount, loyaltyPoints, actualCardNumber)
 	}
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("update card balance: %w", err)
@@ -1088,44 +1349,44 @@ func (s *Service) SimTransaction(req SimRequest) (decimal.Decimal, error) {
 
 	transactionID := fmt.Sprintf("TXN-SIM-%d", time.Now().UnixNano())
 
-	var terminalID string
-	if err := store.QueryRow("SELECT terminal_id FROM terminals LIMIT 1").Scan(&terminalID); err != nil {
-		terminalID = "TRM-SIM-001"
-	}
 	var processedBy string
-	if err := store.QueryRow("SELECT user_id FROM users LIMIT 1").Scan(&processedBy); err != nil {
-		processedBy = "USR-SIM-001"
+	_ = store.QueryRow("SELECT user_id FROM merchants WHERE merchant_id = ?", req.MerchantID).Scan(&processedBy)
+	if processedBy == "" {
+		_ = store.QueryRow("SELECT user_id FROM users WHERE role = 'super_admin' LIMIT 1").Scan(&processedBy)
 	}
 
 	dbType := "payment"
-	description := "Card Payment"
-	netMerchantPayout := req.Amount.Sub(serviceFee)
-	if req.Type == "Refund" {
+	statusVal := "completed"
+	desc := fmt.Sprintf("Payment via terminal (%s)", termDeviceName)
+	switch req.Type {
+	case "Refund":
 		dbType = "refund"
-		description = "Payment Refund"
-		netMerchantPayout = req.Amount.Neg()
+		statusVal = "refunded"
+		desc = fmt.Sprintf("Refund via terminal (%s)", termDeviceName)
+	case "Fare":
+		desc = fmt.Sprintf("Transport fare payment (%s)", termDeviceName)
 	}
 
-	var uid string
-	_ = tx.QueryRow("SELECT user_id FROM cards WHERE card_number=?", req.CardNumber).Scan(&uid)
-
-	_, err = tx.Exec(`INSERT INTO transactions (
-		transaction_id, card_number, user_id, merchant_id, terminal_id, 
-		transaction_type, amount, service_fee, net_merchant_payout, 
-		processed_by, points_earned, status, description
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)`,
-		transactionID, req.CardNumber, uid, req.MerchantID, terminalID, 
-		dbType, req.Amount, serviceFee, netMerchantPayout, 
-		processedBy, loyaltyPoints, description)
+	_, err = tx.Exec(`INSERT INTO transactions 
+		(transaction_id, card_number, user_id, merchant_id, terminal_id, transaction_type, amount, service_fee, processed_by, points_earned, status, description) 
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		transactionID, actualCardNumber, *cardUserID, req.MerchantID, req.TerminalID, dbType, req.Amount, serviceFee, processedBy, loyaltyPoints, statusVal, desc)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("insert transaction: %w", err)
 	}
-
-	// Also fix any previous simulation transactions that were stuck in pending
-	_, _ = tx.Exec(`UPDATE transactions SET status = 'completed', net_merchant_payout = amount - service_fee, description = 'Card Payment' WHERE transaction_id LIKE 'TXN-SIM-%' AND status = 'pending'`)
 
 	if err := tx.Commit(); err != nil {
 		return decimal.Zero, fmt.Errorf("commit: %w", err)
 	}
 	return serviceFee, nil
+}
+
+// GetUsernameByCardNumber returns the username for the owner of the given card number.
+func (s *Service) GetUsernameByCardNumber(cardNumber string) string {
+	return s.repo.GetUsernameByCardNumber(cardNumber)
+}
+
+// GetMerchantUsernameByID returns the username of the user managing the given merchant ID.
+func (s *Service) GetMerchantUsernameByID(merchantID string) string {
+	return s.repo.GetMerchantUsernameByID(merchantID)
 }

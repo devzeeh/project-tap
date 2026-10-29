@@ -179,3 +179,41 @@ func (c *RedisCache) InvalidateAdmin() {
 	}
 	_ = c.Delete(AdminDashboardKey())
 }
+
+
+func getDurationFromEnv(key string, fallback time.Duration) time.Duration {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(val)
+	if err == nil && d > 0 {
+		return d
+	}
+	var sec int
+	if _, err := fmt.Sscanf(val, "%d", &sec); err == nil && sec > 0 {
+		return time.Duration(sec) * time.Second
+	}
+	return fallback
+}
+
+// UserDashboardTTL returns the TTL for user dashboard caching (default: 30 seconds).
+func UserDashboardTTL() time.Duration {
+	return getDurationFromEnv("CACHE_USER_TTL", 30*time.Second)
+}
+
+// UserTransactionsTTL returns the TTL for user transactions history caching (default: 30 seconds).
+func UserTransactionsTTL() time.Duration {
+	return getDurationFromEnv("CACHE_TXN_TTL", 30*time.Second)
+}
+
+// MerchantDashboardTTL returns the TTL for merchant dashboard caching (default: 30 seconds).
+func MerchantDashboardTTL() time.Duration {
+	return getDurationFromEnv("CACHE_MERCHANT_TTL", 30*time.Second)
+}
+
+// AdminDashboardTTL returns the TTL for admin dashboard caching (default: 30 seconds).
+func AdminDashboardTTL() time.Duration {
+	return getDurationFromEnv("CACHE_ADMIN_TTL", 30*time.Second)
+}
+

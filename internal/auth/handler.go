@@ -6,7 +6,6 @@ import (
 	"html/template"
 	"log"
 	"net/http"
-	"os"
 
 	jsonwrite "project-tap/internal/pkg/handler"
 )
@@ -89,6 +88,8 @@ func NewHandler(svc *Service, tpl *template.Template) *Handler {
 func (h *Handler) LoginView(w http.ResponseWriter, r *http.Request) {
 	h.tpl.ExecuteTemplate(w, "login.html", nil)
 }
+
+// LoginAuthHandler processes user authentication and issues JWT cookies.
 func (h *Handler) LoginAuthHandler(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -119,8 +120,6 @@ func (h *Handler) LoginAuthHandler(w http.ResponseWriter, r *http.Request) {
 		ID:          result.ID,
 		Username:    result.Username,
 		RedirectURL: result.RedirectURL,
-		AccessToken: result.Tokens.Access,
-		Token:       result.Tokens.Access,
 	})
 }
 
@@ -133,6 +132,8 @@ func (h *Handler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Refresh token
+
+// RefreshTokenHandler issues a new access token using a valid refresh token.
 func (h *Handler) RefreshTokenHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("refresh_token")
 	if err != nil {
@@ -167,6 +168,8 @@ func (h *Handler) RefreshTokenHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) SignupView(w http.ResponseWriter, r *http.Request) {
 	h.tpl.ExecuteTemplate(w, "signup.html", nil)
 }
+
+// SignupSendOTP initiates email verification for a new customer signup.
 func (h *Handler) SignupSendOTP(w http.ResponseWriter, r *http.Request) {
 	var req CheckDetailsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -194,6 +197,8 @@ func (h *Handler) SignupSendOTP(w http.ResponseWriter, r *http.Request) {
 		Success: true, Message: "OTP sent successfully to your email",
 	})
 }
+
+// SignupVerifyOTP verifies the provided OTP for customer email verification.
 func (h *Handler) SignupVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	var req SignupVerifyOTPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -214,6 +219,8 @@ func (h *Handler) SignupVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		Success: true, Message: "Email successfully verified",
 	})
 }
+
+// CheckCardHandler validates a card number for registration.
 func (h *Handler) CheckCardHandler(w http.ResponseWriter, r *http.Request) {
 	var req SignupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -232,6 +239,8 @@ func (h *Handler) CheckCardHandler(w http.ResponseWriter, r *http.Request) {
 		Success: true, Message: "Card is valid", Field: "card",
 	})
 }
+
+// SignupHandler finalizes the creation of a new customer account.
 func (h *Handler) SignupHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("SignupHandler: running")
 	var req SignupRequest
@@ -246,7 +255,12 @@ func (h *Handler) SignupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.Signup(r.Context(), req); err != nil {
-		writeErr(w, http.StatusInternalServerError, "System error finalizing account creation. Please try again.")
+		log.Printf("SignupHandler error for %s: %v", req.Email, err)
+		msg := "System error finalizing account creation. Please try again."
+		if err.Error() == "invalid card number" {
+			msg = "The provided card number is invalid or not found."
+		}
+		writeErr(w, http.StatusInternalServerError, msg)
 		return
 	}
 
@@ -261,6 +275,8 @@ func (h *Handler) SignupHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) AdminSignupView(w http.ResponseWriter, r *http.Request) {
 	h.tpl.ExecuteTemplate(w, "admin_signup.html", nil)
 }
+
+// AdminSignupHandler processes the creation of a new super admin account.
 func (h *Handler) AdminSignupHandler(w http.ResponseWriter, r *http.Request) {
 	var req AdminSignupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -289,6 +305,8 @@ func (h *Handler) AdminSignupHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) MerchantSignupView(w http.ResponseWriter, r *http.Request) {
 	h.tpl.ExecuteTemplate(w, "merchant_signup.html", nil)
 }
+
+// MerchantSignupHandler processes a new merchant application submission.
 func (h *Handler) MerchantSignupHandler(w http.ResponseWriter, r *http.Request) {
 	var req MerchantSignupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -322,6 +340,8 @@ func (h *Handler) MerchantSignupHandler(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) ForgotPasswordView(w http.ResponseWriter, r *http.Request) {
 	h.tpl.ExecuteTemplate(w, "forgot-password.html", nil)
 }
+
+// ForgotPasswordSendOTP initiates the password reset flow by sending an OTP.
 func (h *Handler) ForgotPasswordSendOTP(w http.ResponseWriter, r *http.Request) {
 	var req ForgotPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -343,6 +363,8 @@ func (h *Handler) ForgotPasswordSendOTP(w http.ResponseWriter, r *http.Request) 
 		Success: true, Message: "If the email is found, an OTP has been sent.",
 	})
 }
+
+// ForgotPasswordVerifyOTP validates the OTP for a password reset request.
 func (h *Handler) ForgotPasswordVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	var req ForgotPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -359,6 +381,8 @@ func (h *Handler) ForgotPasswordVerifyOTP(w http.ResponseWriter, r *http.Request
 		Success: true, Message: "OTP verified",
 	})
 }
+
+// ResetPassword updates the user's password after successful OTP verification.
 func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	var req ForgotPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -385,13 +409,12 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 
 // setAuthCookies attaches the JWT and refresh tokens to the HTTP response.
 func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
-	isSecure := os.Getenv("COOKIE_SECURE") == "true" || os.Getenv("ENV") == "production"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "jwt",
 		Value:    accessToken,
 		MaxAge:   int(AccessTokenTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   isSecure,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		Path:     "/",
 	})
@@ -400,7 +423,7 @@ func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
 		Value:    refreshToken,
 		MaxAge:   int(RefreshTokenTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   isSecure,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		Path:     "/",
 	})
